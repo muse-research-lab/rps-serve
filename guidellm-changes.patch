@@ -1,0 +1,100 @@
+diff --git a/src/guidellm/backends/openai/request_handlers.py b/src/guidellm/backends/openai/request_handlers.py
+index cf7b835..34490ed 100644
+--- a/src/guidellm/backends/openai/request_handlers.py
++++ b/src/guidellm/backends/openai/request_handlers.py
+@@ -154,6 +154,7 @@ class TextCompletionsRequestHandler(OpenAIRequestHandler):
+         self.streaming_texts: list[str] = []
+         self.streaming_usage: dict[str, int | dict[str, int]] | None = None
+         self.streaming_response_id: str | None = None
++        self.prompt_token_ids: list[str] = []
+ 
+     def format(  # noqa: C901
+         self,
+@@ -563,6 +564,9 @@ class ChatCompletionsRequestHandler(TextCompletionsRequestHandler):
+         if "id" in data and self.streaming_response_id is None:
+             self.streaming_response_id = data["id"]
+ 
++        if token_ids := data.get("prompt_token_ids", []):
++            self.prompt_token_ids.extend(token_ids)
++
+         updated = False
+         choices, usage = self.extract_choices_and_usage(data)
+         choice: dict[str, dict] = choices[0] if choices else {}
+@@ -595,6 +599,7 @@ class ChatCompletionsRequestHandler(TextCompletionsRequestHandler):
+             text=text,
+             input_metrics=input_metrics,
+             output_metrics=output_metrics,
++            prompt_token_ids=self.prompt_token_ids,
+         )
+ 
+ 
+diff --git a/src/guidellm/data/finalizers.py b/src/guidellm/data/finalizers.py
+index 5fda041..b55e515 100644
+--- a/src/guidellm/data/finalizers.py
++++ b/src/guidellm/data/finalizers.py
+@@ -117,3 +117,12 @@ class GenerativeRequestFinalizer(DatasetFinalizer[Iterable[GenerationRequest]]):
+             input_metrics=input_metrics,
+             output_metrics=output_metrics,
+         )
++
++@FinalizerRegistry.register("custom_generative")
++class CustomGenerativeFinalizer(GenerativeRequestFinalizer):
++    def finalize_turn(self, columns: dict[str, Any]) -> GenerationRequest:
++        rid = next(iter(columns.get("request_id", [])), None)
++        request = super().finalize_turn(columns)
++        if rid:
++            request.request_id = rid
++        return request
+\ No newline at end of file
+diff --git a/src/guidellm/data/preprocessors/mappers.py b/src/guidellm/data/preprocessors/mappers.py
+index ee819fb..6d07726 100644
+--- a/src/guidellm/data/preprocessors/mappers.py
++++ b/src/guidellm/data/preprocessors/mappers.py
+@@ -201,3 +201,10 @@ class GenerativeColumnMapper(DataDependentPreprocessor):
+         self.datasets_column_mappings = self.datasets_mappings(
+             datasets, self.input_mappings
+         )
++
++@PreprocessorRegistry.register("custom_column_mapper")
++class CustomColumnMapper(GenerativeColumnMapper):
++    defaults: ClassVar[dict[str, list[str]]] = {
++        **GenerativeColumnMapper.defaults,
++        "request_id": ["id", "request_id"],
++    }
+\ No newline at end of file
+diff --git a/src/guidellm/schemas/request_stats.py b/src/guidellm/schemas/request_stats.py
+index e94e31c..b9e3e13 100644
+--- a/src/guidellm/schemas/request_stats.py
++++ b/src/guidellm/schemas/request_stats.py
+@@ -60,6 +60,10 @@ class GenerativeRequestStats(StandardBaseDict):
+     output_metrics: UsageMetrics = Field(
+         description="Token usage statistics for the generated output"
+     )
++    prompt_token_ids: list[int] | None = Field(
++        default=None,
++        description="The prompt token ids.",
++    )
+ 
+     # Request stats
+     @computed_field  # type: ignore[misc]
+diff --git a/src/guidellm/schemas/response.py b/src/guidellm/schemas/response.py
+index 202fdab..5974023 100644
+--- a/src/guidellm/schemas/response.py
++++ b/src/guidellm/schemas/response.py
+@@ -60,6 +60,10 @@ class GenerationResponse(StandardBaseModel):
+         default_factory=UsageMetrics,
+         description="Token usage statistics from the generated output.",
+     )
++    prompt_token_ids: list[int] | None = Field(
++        default=None,
++        description="The prompt token ids.",
++    )
+ 
+     def compile_stats(
+         self,
+@@ -118,4 +122,5 @@ class GenerationResponse(StandardBaseModel):
+             info=info,
+             input_metrics=UsageMetrics(**input_metrics_dict),
+             output_metrics=UsageMetrics(**output_metrics_dict),
++            prompt_token_ids=self.prompt_token_ids
+         )
