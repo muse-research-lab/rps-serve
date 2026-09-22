@@ -1,0 +1,16 @@
+ffmpeg-python>=0.2.0
+pillow>=10.4.0
+PyYAML>=6.0.2
+pandas>=2.2.3
+pyarrow>=18.0.0
+numpy>=1.26.4
+pymupdf>=1.26.4
+evaluate
+datasets
+imageio
+transformers
+librosa
+opencv-python
+torch
+torchvision
+scenedetect

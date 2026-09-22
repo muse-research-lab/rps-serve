@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llmperf"
+version = "0.0.1"
+description = "LLMPerf Inference is a benchmark suite for measuring how fast systems can run MLLMs in a variety of deployment scenarios."
+authors = [
+    { name = "Konstantinos Papaioannou", email = "konstantinos.papaioannou@imdea.org" },
+]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "ffmpeg-python>=0.2.0",
+    "pillow>=10.4.0",
+    "PyYAML>=6.0.2",
+    "pandas>=2.2.3",
+    "pyarrow>=18.0.0",
+    "numpy>=1.26.4",
+    "pymupdf>=1.26.4",
+    "evaluate",
+    "datasets",
+    "imageio",
+    "transformers",
+    "librosa",
+    "opencv-python",
+    "torch",
+    "torchvision",
+    "scenedetect"
+]
+
+[tool.setuptools]
+packages = ["llmperf"]
