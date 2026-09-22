@@ -1,0 +1,1951 @@
+diff --git a/vllm/config/scheduler.py b/vllm/config/scheduler.py
+index fb6951ea7..7cde5164e 100644
+--- a/vllm/config/scheduler.py
++++ b/vllm/config/scheduler.py
+@@ -19,7 +19,7 @@ if TYPE_CHECKING:
+ logger = init_logger(__name__)
+ 
+ RunnerType = Literal["generate", "pooling", "draft"]
+-SchedulerPolicy = Literal["fcfs", "priority"]
++SchedulerPolicy = Literal["fcfs", "priority", "edf", "catfcfs", "wait-only"]
+ 
+ 
+ @config
+diff --git a/vllm/config/vllm.py b/vllm/config/vllm.py
+index b0e74d840..c96680e30 100644
+--- a/vllm/config/vllm.py
++++ b/vllm/config/vllm.py
+@@ -371,6 +371,12 @@ class VllmConfig:
+     remaining requests are aborted once the timeout is reached.
+     """
+ 
++    classifier: str | None = None
++    """Request classifier for the new requests."""
++
++    slo_registry_files: list[str] = Field(default_factory=list)
++    """Files used to populate SLO registry."""
++
+     def compute_hash(self) -> str:
+         """
+         WARNING: Whenever a new field is added to this config,
+diff --git a/vllm/engine/arg_utils.py b/vllm/engine/arg_utils.py
+index 49189862e..c4b203a03 100644
+--- a/vllm/engine/arg_utils.py
++++ b/vllm/engine/arg_utils.py
+@@ -27,7 +27,7 @@ from typing import (
+ import huggingface_hub
+ import regex as re
+ import torch
+-from pydantic import TypeAdapter, ValidationError
++from pydantic import Field, TypeAdapter, ValidationError
+ from pydantic.fields import FieldInfo
+ from typing_extensions import TypeIs
+ 
+@@ -709,6 +709,9 @@ class EngineArgs:
+     fail_on_environ_validation: bool = False
+     gdn_prefill_backend: Literal["flashinfer", "triton"] | None = None
+ 
++    classifier: str | None = None
++    slo_registry_files: list[str] = Field(default_factory=list)
++
+     def __post_init__(self):
+         # support `EngineArgs(compilation_config={...})`
+         # without having to manually construct a
+@@ -1510,6 +1513,21 @@ class EngineArgs:
+             default=None,
+             help="Select GDN prefill backend.",
+         )
++
++        parser.add_argument(
++            "--classifier",
++            type=str,
++            default=None,
++            help="Request classifier to be used",
++        )
++
++        parser.add_argument(
++            "--slo-registry-files",
++            type=str,
++            nargs="+",
++            default=[],
++            help="One or more paths to JSONL files containing request SLO data.",
++        )
+         return parser
+ 
+     @classmethod
+@@ -2224,6 +2242,8 @@ class EngineArgs:
+             performance_mode=self.performance_mode,
+             weight_transfer_config=self.weight_transfer_config,
+             shutdown_timeout=self.shutdown_timeout,
++            classifier=self.classifier,
++            slo_registry_files=self.slo_registry_files,
+         )
+ 
+         return config
+diff --git a/vllm/model_executor/models/utils.py b/vllm/model_executor/models/utils.py
+index 095d0e363..4a519862c 100644
+--- a/vllm/model_executor/models/utils.py
++++ b/vllm/model_executor/models/utils.py
+@@ -430,7 +430,8 @@ def _flatten_embeddings(embeddings: NestedTensors) -> torch.Tensor:
+         # Flatten all but the last dimension.
+         return embeddings.flatten(0, -2)
+ 
+-    return torch.cat(tuple(_flatten_embeddings(t) for t in embeddings))
++    local_device = torch.accelerator.current_device_index()
++    return torch.cat(tuple(_flatten_embeddings(t).to(local_device) for t in embeddings))
+ 
+ 
+ def _embedding_count_expression(embeddings: NestedTensors) -> str:
+diff --git a/vllm/outputs.py b/vllm/outputs.py
+index 2c71d2afb..9b0cbd85d 100644
+--- a/vllm/outputs.py
++++ b/vllm/outputs.py
+@@ -13,6 +13,7 @@ from typing_extensions import TypeVar
+ from vllm.logger import init_logger
+ from vllm.logprobs import PromptLogprobs, SampleLogprobs
+ from vllm.lora.request import LoRARequest
++from vllm.request_metadata import RequestMetadata
+ from vllm.v1.metrics.stats import RequestStateStats
+ 
+ logger = init_logger(__name__)
+@@ -121,6 +122,7 @@ class RequestOutput:
+         num_cached_tokens: int | None = None,
+         *,
+         kv_transfer_params: dict[str, Any] | None = None,
++        request_md: RequestMetadata | None = None,
+         # Forward compatibility, code that uses args added in new release can
+         # still run with older versions of vLLM without breaking.
+         **kwargs: Any,
+@@ -141,6 +143,7 @@ class RequestOutput:
+         self.encoder_prompt_token_ids = encoder_prompt_token_ids
+         self.num_cached_tokens = num_cached_tokens
+         self.kv_transfer_params = kv_transfer_params
++        self.request_md = request_md
+ 
+     def add(self, next_output: "RequestOutput", aggregate: bool) -> None:
+         """Merge subsequent RequestOutput into this one"""
+diff --git a/vllm/request_metadata.py b/vllm/request_metadata.py
+new file mode 100644
+index 000000000..97a1609a8
+--- /dev/null
++++ b/vllm/request_metadata.py
+@@ -0,0 +1,18 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++import dataclasses
++
++
++@dataclasses.dataclass
++class RequestMetadata:
++    # Estimated end-to-end latency in seconds
++    estimated_time: float
++
++    # Classified category
++    category: str = "unknown"
++
++    # Skip the line flag
++    stl: bool = False
++
++    slo: float = 0.0
+diff --git a/vllm/v1/core/sched/queue_manager.py b/vllm/v1/core/sched/queue_manager.py
+new file mode 100644
+index 000000000..11dc1083f
+--- /dev/null
++++ b/vllm/v1/core/sched/queue_manager.py
+@@ -0,0 +1,416 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++import json
++import time
++from collections import deque
++
++import numpy as np
++
++from vllm.v1.core.sched.request_queue import RequestQueue, create_request_queue
++from vllm.v1.request import Request, RequestStatus
++
++
++class ExponentialMovingAverage:
++    def __init__(self, alpha, ema=None):
++        self.alpha = alpha
++        self.ema = self.curr = ema
++
++    def update(self, value):
++        self.curr = value
++        if self.ema is None:
++            self.ema = value
++        else:
++            self.ema = self.alpha * value + (1 - self.alpha) * self.ema
++
++    def clear(self):
++        self.ema = None
++
++
++class QueueManager:
++    cache = {
++        "llava-onevision-qwen2-0.5b-ov-hf": {
++            "text": 0.006347427730379662,
++            "image": 0.08030594210512935,
++            "video": 0.2981209339904599,
++        },
++        "Qwen2.5-VL-3B-Instruct": {
++            "text": 0.016478755001333497,
++            "image": 0.06494460209924728,
++            "video": 1.9391672755708338,
++        },
++        "gemma-3-4b-it": {
++            "text": 0.019657576298850694,
++            "image": 0.1107543233949691,
++            "video": 1.7952281059804371,
++        },
++        "llava-onevision-qwen2-7b-ov-chat-hf": {
++            "text": 0.030164917991350366,
++            "image": 0.30287961234990507,
++            "video": 0.7456325789636467,
++        },
++        "Qwen2.5-VL-7B-Instruct": {
++            "text": 0.030418283349467327,
++            "image": 0.08162711962172761,
++            "video": 2.334135525283831,
++        },
++        "gemma-3-12b-it": {
++            "text": 0.05408658215463758,
++            "image": 0.15471395227848553,
++            "video": 2.4613284320330715,
++        },
++        "pixtral-12b": {
++            "text": 0.06568552921417621,
++            "image": 0.2168186946886126,
++            "video": 4.097469515458215,
++        },
++    }
++
++    def __init__(self, model, policy, track_stats: bool = False):
++        self.combined: list[Request] = []
++        self.running_req_ids: set[str] = set()
++        self.waiting_req_ids: set[str] = set()
++        self.preempted_req_ids: set[str] = set()
++        self.ignored_req_ids: set[str] = set()
++        self.skipped_req_ids: set[str] = set()
++        self.last_running_idx = None
++        self.first_waiting_idx = None
++
++        self.track_stats = track_stats
++        self.model_name = model.split("/")[-1]
++
++        if self.track_stats:
++            # alpha=0.004 and we keep history of 500 steps ~10-15s
++            self.sand_queue_age = ExponentialMovingAverage(0.004)
++            self.pebbles_queue_age = ExponentialMovingAverage(0.004)
++            self.rocks_queue_age = ExponentialMovingAverage(0.004)
++
++            self.sand_queue_size = ExponentialMovingAverage(0.004)
++            self.pebbles_queue_size = ExponentialMovingAverage(0.004)
++            self.rocks_queue_size = ExponentialMovingAverage(0.004)
++
++            sand_tpref = pebbles_tpref = rocks_tpref = None
++
++            if self.model_name in self.cache:
++                sand_tpref = self.cache[self.model_name]["text"]
++                pebbles_tpref = self.cache[self.model_name]["image"]
++                rocks_tpref = self.cache[self.model_name]["video"]
++
++            # TODO: Dynamically update them
++            self.sand_prefill_time = ExponentialMovingAverage(0.004, sand_tpref)
++            self.pebbles_prefill_time = ExponentialMovingAverage(0.004, pebbles_tpref)
++            self.rocks_prefill_time = ExponentialMovingAverage(0.004, rocks_tpref)
++
++            self.queue_stats = {"sand": [], "pebbles": [], "rocks": []}
++
++        self.policy = policy
++
++    def get_last_running_idx(self) -> int | None:
++        return self.last_running_idx
++
++    def get_first_waiting_idx(self) -> int | None:
++        return self.first_waiting_idx
++
++    def num_running_requests(self) -> int:
++        return len(self.running_req_ids)
++
++    def reorder_running_queue(self, running: list[Request]) -> list[Request]:
++        running = sorted(running, key=lambda req: req.priority or 0)
++        return running
++
++    def reorder_waiting_queue(self, waiting: RequestQueue) -> deque[Request]:
++        waiting = deque(sorted(waiting, key=lambda req: req.priority or 0))
++        return waiting
++
++    def combine_queues(self, running: list[Request], waiting: deque[Request]):
++        # "running" = 0 < "preempted" = 1 < "waiting" = 2
++        self.running_req_ids = set()
++        self.waiting_req_ids = set()
++        self.preempted_req_ids = set()
++        combined = []
++
++        for req in running:
++            if req.status == RequestStatus.PREEMPTED:
++                combined.append((1, req.priority, req))
++                self.preempted_req_ids.add(req.request_id)
++            else:
++                combined.append((0, req.priority, req))
++                self.running_req_ids.add(req.request_id)
++
++        for req in waiting:
++            combined.append((2, req.priority, req))
++            self.waiting_req_ids.add(req.request_id)
++
++        # Sort: by priority DESC, then by queue type
++        combined.sort(key=lambda x: (x[1], x[0]))
++        self.combined = [x[2] for x in combined]
++
++        # Update last running idx
++        self.last_running_idx = None
++        for i in range(len(self.combined) - 1, -1, -1):
++            if self.combined[i].request_id in self.running_req_ids:
++                self.last_running_idx = i
++                break
++
++        # Update first waiting idx
++        self.first_waiting_idx = None
++        for i in range(len(self.combined)):
++            if (
++                self.combined[i].request_id in self.waiting_req_ids
++                or self.combined[i].request_id in self.preempted_req_ids
++            ):
++                self.first_waiting_idx = i
++                break
++
++        return
++
++    def update_queues(self) -> tuple[list[Request], RequestQueue]:
++        # Costly iteration over combined queue, only when ignored request exists
++        if self.ignored_req_ids or self.skipped_req_ids:
++            running: list[Request] = []
++            waiting: RequestQueue = create_request_queue(self.policy)
++
++            for req in self.combined:
++                request_id = req.request_id
++                if request_id in self.running_req_ids:
++                    running.append(req)
++                elif request_id in self.ignored_req_ids:
++                    waiting.add_request(req)
++                else:
++                    waiting.add_request(req)
++
++            return running, waiting
++
++        if self.last_running_idx is not None and self.first_waiting_idx is not None:
++            assert self.last_running_idx == self.first_waiting_idx - 1
++
++            request_queue = create_request_queue(self.policy)
++            for request in self.combined[self.first_waiting_idx :]:
++                request_queue.add_request(request)
++            return self.combined[: self.first_waiting_idx], request_queue
++
++        elif self.last_running_idx is not None and self.first_waiting_idx is None:
++            return self.combined, create_request_queue(self.policy)
++
++        elif self.last_running_idx is None and self.first_waiting_idx is not None:
++            request_queue = create_request_queue(self.policy)
++            for request in self.combined:
++                request_queue.add_request(request)
++            return [], request_queue
++
++        else:
++            return [], create_request_queue(self.policy)
++
++    def update_idxs_after_preemption(self):
++        # A) Move LR idx to the beginning of the combined queue
++        # B1) Adjust FW idx if we have an empty running queue after preemption
++        # B2) Adjust FW idx if "first_preempted_idx" < "first_waiting_idx"
++        # B3) Adjust FW idx if we have an empty waiting queue before preemption
++        if self.last_running_idx is None:
++            return
++
++        last_running_idx = self.last_running_idx
++
++        # Update request id sets
++        request_id = self.combined[last_running_idx].request_id
++        self.running_req_ids.remove(request_id)
++        self.preempted_req_ids.add(request_id)
++
++        # Update last running idx
++        self.last_running_idx = None
++        for i in range(last_running_idx, -1, -1):
++            if self.combined[i].request_id in self.running_req_ids:
++                self.last_running_idx = i
++                break
++
++        # Update first waiting idx if necessary
++        if (
++            self.last_running_idx is None
++            and len(self.waiting_req_ids) + len(self.preempted_req_ids) > 0
++        ):
++            assert self.first_waiting_idx == 0
++            return
++
++        if (
++            self.first_waiting_idx is not None
++            and last_running_idx < self.first_waiting_idx
++        ):
++            self.first_waiting_idx = last_running_idx
++            return
++
++        if self.first_waiting_idx is None:
++            self.first_waiting_idx = len(self.combined) - 1
++
++        return
++
++    def update_idxs_after_new_scheduling(self):
++        # A) Moves FW idx to the end of the combined queue
++        # B1) Adjust LR idx if we have an empty waiting queue after scheduling
++        # B2) Adjust LR idx if "old_first_waiting_idx" > "last_running_idx"
++        # B3) Adjust LR idx if we have an empty running queue before scheduling
++        if self.first_waiting_idx is None:
++            return
++
++        first_waiting_idx = self.first_waiting_idx
++
++        # Update request id sets
++        request_id = self.combined[first_waiting_idx].request_id
++
++        if request_id in self.waiting_req_ids:
++            self.waiting_req_ids.remove(request_id)
++
++        if request_id in self.preempted_req_ids:
++            self.preempted_req_ids.remove(request_id)
++
++        self.running_req_ids.add(request_id)
++
++        # Update first waiting idx
++        self.first_waiting_idx = None
++        for i in range(first_waiting_idx, len(self.combined)):
++            if (
++                self.combined[i].request_id in self.waiting_req_ids
++                or self.combined[i].request_id in self.preempted_req_ids
++            ):
++                self.first_waiting_idx = i
++                break
++
++        # Update last running idx if necessary
++        if self.first_waiting_idx is None and len(self.running_req_ids) > 0:
++            self.last_running_idx = len(self.combined) - 1
++            return
++
++        if (
++            self.last_running_idx is not None
++            and first_waiting_idx > self.last_running_idx
++        ):
++            self.last_running_idx = first_waiting_idx
++            return
++
++        if self.last_running_idx is None:
++            self.last_running_idx = 0
++
++        return
++
++    def update_idxs_after_ignored(self):
++        if self.first_waiting_idx is None:
++            return
++
++        first_waiting_idx = self.first_waiting_idx
++
++        # Update request id sets
++        request_id = self.combined[first_waiting_idx].request_id
++        self.waiting_req_ids.remove(request_id)
++        self.ignored_req_ids.add(request_id)
++
++        # Update first waiting idx
++        self.first_waiting_idx = None
++        for i in range(first_waiting_idx, len(self.combined)):
++            if (
++                self.combined[i].request_id in self.waiting_req_ids
++                or self.combined[i].request_id in self.preempted_req_ids
++            ):
++                self.first_waiting_idx = i
++                break
++
++    def update_idxs_after_skipped(self):
++        if self.first_waiting_idx is None:
++            return
++
++        first_waiting_idx = self.first_waiting_idx
++
++        # Update request id sets
++        request_id = self.combined[first_waiting_idx].request_id
++        self.waiting_req_ids.remove(request_id)
++        self.skipped_req_ids.add(request_id)
++
++        # Update first waiting idx
++        self.first_waiting_idx = None
++        for i in range(first_waiting_idx, len(self.combined)):
++            if (
++                self.combined[i].request_id in self.waiting_req_ids
++                or self.combined[i].request_id in self.preempted_req_ids
++            ):
++                self.first_waiting_idx = i
++                break
++
++    def update_queue_stats(self, requests: dict[str, Request]):
++        if not self.track_stats:
++            return
++
++        sand_queue_size: int = 0
++        pebbles_queue_size: int = 0
++        rocks_queue_size: int = 0
++
++        sand_queue_ages: list[float] = []
++        pebbles_queue_ages: list[float] = []
++        rocks_queue_ages: list[float] = []
++
++        now = time.time()
++        for request in requests.values():
++            age = now - request.arrival_time
++            request.age = age
++            if request.request_md.category == "sand":
++                sand_queue_size += 1
++                sand_queue_ages.append(age)
++            elif request.request_md.category == "pebbles":
++                pebbles_queue_size += 1
++                pebbles_queue_ages.append(age)
++            elif request.request_md.category == "rocks":
++                rocks_queue_size += 1
++                rocks_queue_ages.append(age)
++            else:
++                continue
++
++        self.sand_queue_size.update(sand_queue_size)
++        self.pebbles_queue_size.update(pebbles_queue_size)
++        self.rocks_queue_size.update(rocks_queue_size)
++
++        self.sand_queue_age.update(np.mean(sand_queue_ages or [0.0]))
++        self.pebbles_queue_age.update(np.mean(pebbles_queue_ages or [0.0]))
++        self.rocks_queue_age.update(np.mean(rocks_queue_ages or [0.0]))
++
++        # Save queue stats
++        self.queue_stats["sand"].append(
++            (
++                now,
++                self.sand_queue_size.ema,
++                self.sand_queue_age.ema,
++                self.sand_queue_size.curr,
++                self.sand_queue_age.curr,
++            )
++        )
++        self.queue_stats["pebbles"].append(
++            (
++                now,
++                self.pebbles_queue_size.ema,
++                self.pebbles_queue_age.ema,
++                self.pebbles_queue_size.curr,
++                self.pebbles_queue_age.curr,
++            )
++        )
++        self.queue_stats["rocks"].append(
++            (
++                now,
++                self.rocks_queue_size.ema,
++                self.rocks_queue_age.ema,
++                self.rocks_queue_size.curr,
++                self.rocks_queue_age.curr,
++            )
++        )
++
++    def save_stats(self):
++        if not self.track_stats:
++            return
++
++        # Save queue stats
++        for queue, stats in self.queue_stats.items():
++            with open(f"{queue}-queue-stats.log", "w") as f:
++                for record in stats:
++                    log_entry = {
++                        "timestamp": record[0],
++                        "avg_queue_size": record[1],
++                        "avg_queue_age": record[2],
++                        "queue_size": record[3],
++                        "queue_age": record[4],
++                    }
++                    f.write(json.dumps(log_entry) + "\n")
+diff --git a/vllm/v1/core/sched/request_queue.py b/vllm/v1/core/sched/request_queue.py
+index 38c7db94a..28933acd8 100644
+--- a/vllm/v1/core/sched/request_queue.py
++++ b/vllm/v1/core/sched/request_queue.py
+@@ -15,6 +15,9 @@ class SchedulingPolicy(Enum):
+ 
+     FCFS = "fcfs"
+     PRIORITY = "priority"
++    EDF = "edf"
++    CATFCFS = "catfcfs"
++    WO = "wait-only"
+ 
+ 
+ class RequestQueue(ABC):
+@@ -204,5 +207,11 @@ def create_request_queue(policy: SchedulingPolicy) -> RequestQueue:
+         return PriorityRequestQueue()
+     elif policy == SchedulingPolicy.FCFS:
+         return FCFSRequestQueue()
++    elif (
++        policy == SchedulingPolicy.EDF
++        or policy == SchedulingPolicy.CATFCFS
++        or policy == SchedulingPolicy.WO
++    ):
++        return PriorityRequestQueue()
+     else:
+         raise ValueError(f"Unknown scheduling policy: {policy}")
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index 45a5169a3..0bf9c7f4e 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -42,11 +42,13 @@ from vllm.v1.core.sched.output import (
+     NewRequestData,
+     SchedulerOutput,
+ )
++from vllm.v1.core.sched.queue_manager import QueueManager
+ from vllm.v1.core.sched.request_queue import (
+     RequestQueue,
+     SchedulingPolicy,
+     create_request_queue,
+ )
++from vllm.v1.core.sched.slo_expiration_manager import SLOExpirationManager
+ from vllm.v1.core.sched.utils import check_stop, remove_all
+ from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
+ from vllm.v1.kv_cache_interface import KVCacheConfig
+@@ -276,6 +278,28 @@ class Scheduler(SchedulerInterface):
+ 
+         self._pause_state: PauseState = PauseState.UNPAUSED
+ 
++        if self.scheduler_config.policy in ["fcfs", "catfcfs", "edf"]:
++            logger.info(
++                f"Initializing QueueManager: {self.vllm_config.model_config.model}, {self.policy}"
++            )
++            self.queue_manager = QueueManager(
++                self.vllm_config.model_config.model, self.policy
++            )
++        else:
++            logger.info(
++                f"Initializing QueueManager: {self.vllm_config.model_config.model}, {self.policy}, {True}"
++            )
++            self.queue_manager = QueueManager(
++                self.vllm_config.model_config.model, self.policy, track_stats=True
++            )
++
++        if self.scheduler_config.policy in ["fcfs", "catfcfs", "edf", "wait-only"]:
++            slo_exp_policy = self.scheduler_config.policy
++        else:
++            slo_exp_policy = "rps"
++        logger.info(f"Initializing SLOExpirationManager: {slo_exp_policy}")
++        self.slo_exp_manager = SLOExpirationManager(self.queue_manager, slo_exp_policy)
++
+     def _mamba_block_aligned_split(
+         self,
+         request: Request,
+@@ -342,6 +366,7 @@ class Scheduler(SchedulerInterface):
+         scheduled_resumed_reqs: list[Request] = []
+         scheduled_running_reqs: list[Request] = []
+         preempted_reqs: list[Request] = []
++        preempted_req_ids: set[str] = set()
+ 
+         req_to_new_blocks: dict[str, KVCacheBlocks] = {}
+         num_scheduled_tokens: dict[str, int] = {}
+@@ -359,12 +384,30 @@ class Scheduler(SchedulerInterface):
+         # For logging.
+         scheduled_timestamp = time.monotonic()
+ 
++        # Update priorities
++        self.queue_manager.update_queue_stats(self.requests)
++        self.requests = self.slo_exp_manager.update_priorities(self.requests)
++
++        # Reorder queues
++        self.running = self.queue_manager.reorder_running_queue(self.running)
++        self.waiting = self.queue_manager.reorder_waiting_queue(self.waiting)
++
++        # Combine queues
++        self.queue_manager.combine_queues(self.running, self.waiting)
++
+         self.kv_cache_manager.new_step_starts()
+ 
++        # Record the LoRAs in scheduled_running_reqs
++        scheduled_loras: set[int] = set()
++
+         # First, schedule the RUNNING requests.
+         req_index = 0
+-        while req_index < len(self.running) and token_budget > 0:
+-            request = self.running[req_index]
++        while req_index < len(self.queue_manager.combined) and token_budget > 0:
++            request = self.queue_manager.combined[req_index]
++
++            if request.request_id in preempted_req_ids:
++                # This request has already been preempted.
++                break
+ 
+             if (
+                 request.num_output_placeholders > 0
+@@ -382,83 +425,95 @@ class Scheduler(SchedulerInterface):
+                 req_index += 1
+                 continue
+ 
+-            num_new_tokens = (
+-                request.num_tokens_with_spec
+-                + request.num_output_placeholders
+-                - request.num_computed_tokens
+-            )
+-            if 0 < self.scheduler_config.long_prefill_token_threshold < num_new_tokens:
+-                num_new_tokens = self.scheduler_config.long_prefill_token_threshold
+-            num_new_tokens = min(num_new_tokens, token_budget)
+-
+-            # Make sure the input position does not exceed the max model len.
+-            # This is necessary when using spec decoding.
+-            num_new_tokens = min(
+-                num_new_tokens, self.max_model_len - 1 - request.num_computed_tokens
+-            )
+-
+-            # Schedule encoder inputs.
+-            encoder_inputs_to_schedule = None
+-            external_load_encoder_input: list[int] = []
+-            new_encoder_compute_budget = encoder_compute_budget
+-            if request.has_encoder_inputs:
+-                (
+-                    encoder_inputs_to_schedule,
+-                    num_new_tokens,
+-                    new_encoder_compute_budget,
+-                    external_load_encoder_input,
+-                ) = self._try_schedule_encoder_inputs(
+-                    request,
+-                    request.num_computed_tokens,
+-                    num_new_tokens,
+-                    encoder_compute_budget,
+-                    shift_computed_tokens=1 if self.use_eagle else 0,
++            if request.request_id in self.queue_manager.running_req_ids:
++                num_new_tokens = (
++                    request.num_tokens_with_spec
++                    + request.num_output_placeholders
++                    - request.num_computed_tokens
+                 )
++                if (
++                    0
++                    < self.scheduler_config.long_prefill_token_threshold
++                    < num_new_tokens
++                ):
++                    num_new_tokens = self.scheduler_config.long_prefill_token_threshold
++                num_new_tokens = min(num_new_tokens, token_budget)
+ 
+-            if self.need_mamba_block_aligned_split:
+-                num_new_tokens = self._mamba_block_aligned_split(
+-                    request, num_new_tokens
++                # Make sure the input position does not exceed the max model len.
++                # This is necessary when using spec decoding.
++                num_new_tokens = min(
++                    num_new_tokens, self.max_model_len - 1 - request.num_computed_tokens
+                 )
+ 
+-            if num_new_tokens == 0:
+-                # The request cannot be scheduled because one of the following
+-                # reasons:
+-                # 1. No new tokens to schedule. This may happen when
+-                #    (1) PP>1 and we have already scheduled all prompt tokens
+-                #    but they are not finished yet.
+-                #    (2) Async scheduling and the request has reached to either
+-                #    its max_total_tokens or max_model_len.
+-                # 2. The encoder budget is exhausted.
+-                # 3. The encoder cache is exhausted.
+-                # 4. Insufficient budget for a block-aligned chunk in hybrid
+-                #    models with mamba cache mode \"align\".
+-                # NOTE(woosuk): Here, by doing `continue` instead of `break`,
+-                # we do not strictly follow the FCFS scheduling policy and
+-                # allow the lower-priority requests to be scheduled.
+-                req_index += 1
+-                continue
+-
+-            # Schedule newly needed KV blocks for the request.
+-            with record_function_or_nullcontext("schedule: allocate_slots"):
+-                while True:
+-                    new_blocks = self.kv_cache_manager.allocate_slots(
++                # Schedule encoder inputs.
++                encoder_inputs_to_schedule = None
++                external_load_encoder_input: list[int] = []
++                new_encoder_compute_budget = encoder_compute_budget
++                if request.has_encoder_inputs:
++                    (
++                        encoder_inputs_to_schedule,
++                        num_new_tokens,
++                        new_encoder_compute_budget,
++                        external_load_encoder_input,
++                    ) = self._try_schedule_encoder_inputs(
+                         request,
++                        request.num_computed_tokens,
+                         num_new_tokens,
+-                        num_lookahead_tokens=self.num_lookahead_tokens,
++                        encoder_compute_budget,
++                        shift_computed_tokens=1 if self.use_eagle else 0,
+                     )
+ 
+-                    if new_blocks is not None:
+-                        # The request can be scheduled.
+-                        break
++                if self.need_mamba_block_aligned_split:
++                    num_new_tokens = self._mamba_block_aligned_split(
++                        request, num_new_tokens
++                    )
+ 
+-                    # The request cannot be scheduled.
+-                    # Preempt the lowest-priority request.
+-                    if self.policy == SchedulingPolicy.PRIORITY:
+-                        preempted_req = max(
+-                            self.running,
+-                            key=lambda r: (r.priority, r.arrival_time),
++                if num_new_tokens == 0:
++                    # The request cannot be scheduled because one of the following
++                    # reasons:
++                    # 1. No new tokens to schedule. This may happen when
++                    #    (1) PP>1 and we have already scheduled all prompt tokens
++                    #    but they are not finished yet.
++                    #    (2) Async scheduling and the request has reached to either
++                    #    its max_total_tokens or max_model_len.
++                    # 2. The encoder budget is exhausted.
++                    # 3. The encoder cache is exhausted.
++                    # 4. Insufficient budget for a block-aligned chunk in hybrid
++                    #    models with mamba cache mode \"align\".
++                    # NOTE(woosuk): Here, by doing `continue` instead of `break`,
++                    # we do not strictly follow the FCFS scheduling policy and
++                    # allow the lower-priority requests to be scheduled.
++                    req_index += 1
++                    continue
++
++                # Schedule newly needed KV blocks for the request.
++                with record_function_or_nullcontext("schedule: allocate_slots"):
++                    while True:
++                        new_blocks = self.kv_cache_manager.allocate_slots(
++                            request,
++                            num_new_tokens,
++                            num_lookahead_tokens=self.num_lookahead_tokens,
+                         )
+-                        self.running.remove(preempted_req)
++
++                        if new_blocks is not None:
++                            # The request can be scheduled.
++                            break
++
++                        # The request cannot be scheduled.
++                        # Preempt the lowest-priority request.
++                        lr_idx = self.queue_manager.get_last_running_idx()
++                        if lr_idx is None:
++                            break
++
++                        preempted_req = self.queue_manager.combined[lr_idx]
++                        if (
++                            preempted_req.priority
++                            and request.priority
++                            and preempted_req.priority < request.priority
++                        ):
++                            # No more request to preempt.
++                            break
++
+                         if preempted_req in scheduled_running_reqs:
+                             preempted_req_id = preempted_req.request_id
+                             scheduled_running_reqs.remove(preempted_req)
+@@ -477,110 +532,70 @@ class Scheduler(SchedulerInterface):
+                                 )
+                                 encoder_compute_budget += num_embeds_to_restore
+                             req_index -= 1
+-                    else:
+-                        preempted_req = self.running.pop()
+-
+-                    self._preempt_request(preempted_req, scheduled_timestamp)
+-                    preempted_reqs.append(preempted_req)
+-                    if preempted_req == request:
+-                        # No more request to preempt. Cannot schedule this request.
+-                        break
+ 
+-            if new_blocks is None:
+-                # Cannot schedule this request.
+-                break
++                        self._preempt_request(preempted_req, scheduled_timestamp)
++                        self.queue_manager.update_idxs_after_preemption()
++                        preempted_reqs.append(preempted_req)
++                        preempted_req_ids.add(preempted_req.request_id)
++                        if preempted_req == request:
++                            # No more request to preempt. Cannot schedule this request.
++                            break
+ 
+-            # Schedule the request.
+-            scheduled_running_reqs.append(request)
+-            request_id = request.request_id
+-            req_to_new_blocks[request_id] = new_blocks
+-            num_scheduled_tokens[request_id] = num_new_tokens
+-            token_budget -= num_new_tokens
+-            req_index += 1
+-
+-            # Speculative decode related.
+-            if request.spec_token_ids:
+-                num_scheduled_spec_tokens = (
+-                    num_new_tokens
+-                    + request.num_computed_tokens
+-                    - request.num_tokens
+-                    - request.num_output_placeholders
+-                )
+-                if num_scheduled_spec_tokens > 0:
+-                    spec_token_ids = request.spec_token_ids
+-                    if len(spec_token_ids) > num_scheduled_spec_tokens:
+-                        spec_token_ids = spec_token_ids[:num_scheduled_spec_tokens]
+-                    scheduled_spec_decode_tokens[request.request_id] = spec_token_ids
+-
+-                # New spec tokens will be set in `update_draft_token_ids` before the
+-                # next step when applicable.
+-                request.spec_token_ids = []
+-
+-            # Encoder-related.
+-            if encoder_inputs_to_schedule:
+-                scheduled_encoder_inputs[request_id] = encoder_inputs_to_schedule
+-                # Allocate the encoder cache.
+-                for i in encoder_inputs_to_schedule:
+-                    self.encoder_cache_manager.allocate(request, i)
+-                    if self.ec_connector is not None:
+-                        self.ec_connector.update_state_after_alloc(request, i)
+-                encoder_compute_budget = new_encoder_compute_budget
+-            if external_load_encoder_input:
+-                for i in external_load_encoder_input:
+-                    self.encoder_cache_manager.allocate(request, i)
+-                    if self.ec_connector is not None:
+-                        self.ec_connector.update_state_after_alloc(request, i)
++                if new_blocks is None:
++                    # Cannot schedule this request.
++                    break
+ 
+-        # Record the LoRAs in scheduled_running_reqs
+-        scheduled_loras: set[int] = set()
+-        if self.lora_config:
+-            scheduled_loras = set(
+-                req.lora_request.lora_int_id
+-                for req in scheduled_running_reqs
+-                if req.lora_request and req.lora_request.lora_int_id > 0
+-            )
+-            assert len(scheduled_loras) <= self.lora_config.max_loras
++                # Schedule the request.
++                scheduled_running_reqs.append(request)
++                request_id = request.request_id
++                req_to_new_blocks[request_id] = new_blocks
++                num_scheduled_tokens[request_id] = num_new_tokens
++                token_budget -= num_new_tokens
++                req_index += 1
+ 
+-        # Next, schedule the WAITING requests.
+-        if not preempted_reqs and self._pause_state == PauseState.UNPAUSED:
+-            step_skipped_waiting = create_request_queue(self.policy)
++                # Speculative decode related.
++                if request.spec_token_ids:
++                    num_scheduled_spec_tokens = (
++                        num_new_tokens
++                        + request.num_computed_tokens
++                        - request.num_tokens
++                        - request.num_output_placeholders
++                    )
++                    if num_scheduled_spec_tokens > 0:
++                        spec_token_ids = request.spec_token_ids
++                        if len(spec_token_ids) > num_scheduled_spec_tokens:
++                            spec_token_ids = spec_token_ids[:num_scheduled_spec_tokens]
++                        scheduled_spec_decode_tokens[request.request_id] = (
++                            spec_token_ids
++                        )
+ 
+-            while (self.waiting or self.skipped_waiting) and token_budget > 0:
+-                if len(self.running) == self.max_num_running_reqs:
+-                    break
++                    # New spec tokens will be set in `update_draft_token_ids` before the
++                    # next step when applicable.
++                    request.spec_token_ids = []
+ 
+-                request_queue = self._select_waiting_queue_for_scheduling()
+-                assert request_queue is not None
++                # Encoder-related.
++                if encoder_inputs_to_schedule:
++                    scheduled_encoder_inputs[request_id] = encoder_inputs_to_schedule
++                    # Allocate the encoder cache.
++                    for i in encoder_inputs_to_schedule:
++                        self.encoder_cache_manager.allocate(request, i)
++                        if self.ec_connector is not None:
++                            self.ec_connector.update_state_after_alloc(request, i)
++                    encoder_compute_budget = new_encoder_compute_budget
++                if external_load_encoder_input:
++                    for i in external_load_encoder_input:
++                        self.encoder_cache_manager.allocate(request, i)
++                        if self.ec_connector is not None:
++                            self.ec_connector.update_state_after_alloc(request, i)
+ 
+-                request = request_queue.peek_request()
++            if request.request_id in self.queue_manager.waiting_req_ids:
+                 request_id = request.request_id
+ 
+-                # try to promote blocked statuses while traversing skipped queue.
+-                if self._is_blocked_waiting_status(
+-                    request.status
+-                ) and not self._try_promote_blocked_waiting_request(request):
+-                    if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
+-                        logger.debug(
+-                            "%s is still in WAITING_FOR_REMOTE_KVS state.",
+-                            request_id,
+-                        )
+-                    request_queue.pop_request()
+-                    step_skipped_waiting.prepend_request(request)
+-                    continue
+-
+-                # Check that adding the request still respects the max_loras
+-                # constraint.
+-                if (
+-                    self.lora_config
+-                    and request.lora_request
+-                    and (
+-                        len(scheduled_loras) == self.lora_config.max_loras
+-                        and request.lora_request.lora_int_id not in scheduled_loras
+-                    )
+-                ):
+-                    # Scheduling would exceed max_loras, skip.
+-                    request_queue.pop_request()
+-                    step_skipped_waiting.prepend_request(request)
++                max_cache_tkns = self.kv_cache_config.num_blocks * self.block_size
++                if request.num_prompt_tokens > max_cache_tkns:
++                    request.status = RequestStatus.FINISHED_IGNORED
++                    self.queue_manager.update_idxs_after_ignored()
++                    req_index += 1
+                     continue
+ 
+                 num_external_computed_tokens = 0
+@@ -606,8 +621,8 @@ class Scheduler(SchedulerInterface):
+                             # The request cannot be scheduled because
+                             # the KVConnector couldn't determine
+                             # the number of matched tokens.
+-                            request_queue.pop_request()
+-                            step_skipped_waiting.prepend_request(request)
++                            self.queue_manager.update_idxs_after_skipped()
++                            req_index += 1
+                             continue
+ 
+                         num_external_computed_tokens = ext_tokens
+@@ -671,6 +686,21 @@ class Scheduler(SchedulerInterface):
+ 
+                     # Schedule encoder inputs.
+                     if request.has_encoder_inputs:
++                        encoder_tokens = sum(
++                            [
++                                mm_feat.mm_position.get_num_embeds()
++                                for mm_feat in request.mm_features
++                            ]
++                        )
++                        if (
++                            encoder_tokens > self.encoder_cache_manager.cache_size
++                            or encoder_tokens > self.max_num_encoder_input_tokens
++                        ):
++                            request.status = RequestStatus.FINISHED_IGNORED
++                            self.queue_manager.update_idxs_after_ignored()
++                            req_index += 1
++                            continue
++
+                         (
+                             encoder_inputs_to_schedule,
+                             num_new_tokens,
+@@ -718,17 +748,65 @@ class Scheduler(SchedulerInterface):
+                         for i in encoder_inputs_to_schedule
+                     )
+ 
+-                new_blocks = self.kv_cache_manager.allocate_slots(
+-                    request,
+-                    num_new_tokens,
+-                    num_new_computed_tokens=num_new_local_computed_tokens,
+-                    new_computed_blocks=new_computed_blocks,
+-                    num_lookahead_tokens=effective_lookahead_tokens,
+-                    num_external_computed_tokens=num_external_computed_tokens,
+-                    delay_cache_blocks=load_kv_async,
+-                    num_encoder_tokens=num_encoder_tokens,
+-                    full_sequence_must_fit=self.scheduler_reserve_full_isl,
+-                )
++                with record_function_or_nullcontext("schedule: allocate_slots"):
++                    while True:
++                        new_blocks = self.kv_cache_manager.allocate_slots(
++                            request,
++                            num_new_tokens,
++                            num_new_computed_tokens=num_new_local_computed_tokens,
++                            new_computed_blocks=new_computed_blocks,
++                            num_lookahead_tokens=effective_lookahead_tokens,
++                            num_external_computed_tokens=num_external_computed_tokens,
++                            delay_cache_blocks=load_kv_async,
++                            num_encoder_tokens=num_encoder_tokens,
++                            full_sequence_must_fit=self.scheduler_reserve_full_isl,
++                        )
++
++                        if new_blocks is not None:
++                            # The request can be scheduled.
++                            break
++
++                        # The request cannot be scheduled.
++                        # Preempt the lowest-priority request.
++                        lr_idx = self.queue_manager.get_last_running_idx()
++                        if lr_idx is None:
++                            break
++
++                        preempted_req = self.queue_manager.combined[lr_idx]
++                        if (
++                            preempted_req.priority
++                            and request.priority
++                            and preempted_req.priority < request.priority
++                        ):
++                            # No more request to preempt.
++                            break
++
++                        if preempted_req in scheduled_running_reqs:
++                            preempted_req_id = preempted_req.request_id
++                            scheduled_running_reqs.remove(preempted_req)
++                            token_budget += num_scheduled_tokens.pop(preempted_req_id)
++                            req_to_new_blocks.pop(preempted_req_id)
++                            scheduled_spec_decode_tokens.pop(preempted_req_id, None)
++                            preempted_encoder_inputs = scheduled_encoder_inputs.pop(
++                                preempted_req_id, None
++                            )
++                            if preempted_encoder_inputs:
++                                # Restore encoder compute budget if the preempted
++                                # request had encoder inputs scheduled in this step.
++                                num_embeds_to_restore = sum(
++                                    preempted_req.get_num_encoder_embeds(i)
++                                    for i in preempted_encoder_inputs
++                                )
++                                encoder_compute_budget += num_embeds_to_restore
++                            req_index -= 1
++
++                        self._preempt_request(preempted_req, scheduled_timestamp)
++                        self.queue_manager.update_idxs_after_preemption()
++                        preempted_reqs.append(preempted_req)
++                        preempted_req_ids.add(preempted_req.request_id)
++                        if preempted_req == request:
++                            # No more request to preempt. Cannot schedule this request.
++                            break
+ 
+                 if new_blocks is None:
+                     # The request cannot be scheduled.
+@@ -759,12 +837,10 @@ class Scheduler(SchedulerInterface):
+                             preempted=request.num_preemptions > 0,
+                         )
+ 
+-                request = request_queue.pop_request()
+                 if load_kv_async:
+                     # If loading async, allocate memory and put request
+                     # into the WAITING_FOR_REMOTE_KV state.
+                     request.status = RequestStatus.WAITING_FOR_REMOTE_KVS
+-                    step_skipped_waiting.prepend_request(request)
+                     # Set num_computed_tokens even though KVs are not yet loaded.
+                     # request.num_computed_tokens will not be used anywhere until
+                     # the request finished the KV transfer.
+@@ -779,9 +855,11 @@ class Scheduler(SchedulerInterface):
+                     # _update_waiting_for_remote_kv will then cache
+                     # only the successfully loaded tokens.
+                     request.num_computed_tokens = num_computed_tokens
++                    self.queue_manager.update_idxs_after_skipped()
++                    req_index += 1
+                     continue
+ 
+-                self.running.append(request)
++                req_index += 1
+                 if self.log_stats:
+                     request.record_event(
+                         EngineCoreEventType.SCHEDULED, scheduled_timestamp
+@@ -792,6 +870,7 @@ class Scheduler(SchedulerInterface):
+                     scheduled_resumed_reqs.append(request)
+                 else:
+                     raise RuntimeError(f"Invalid request status: {request.status}")
++                self.queue_manager.update_idxs_after_new_scheduling()
+ 
+                 if self.lora_config and request.lora_request:
+                     scheduled_loras.add(request.lora_request.lora_int_id)
+@@ -818,9 +897,25 @@ class Scheduler(SchedulerInterface):
+                         if self.ec_connector is not None:
+                             self.ec_connector.update_state_after_alloc(request, i)
+ 
+-            # re-queue requests skipped in this pass ahead of older skipped items.
+-            if step_skipped_waiting:
+-                self.skipped_waiting.prepend_requests(step_skipped_waiting)
++        if token_budget == 0 and req_index < len(self.queue_manager.combined):
++            # Preempt remaining requests if any
++            for index in range(req_index, len(self.queue_manager.combined)):
++                req = self.queue_manager.combined[index]
++                if req.status == RequestStatus.RUNNING:
++                    self.kv_cache_manager.free(req)
++                    self.encoder_cache_manager.free(req)
++                    req.status = RequestStatus.PREEMPTED
++                    req.num_computed_tokens = 0
++                    if self.log_stats:
++                        req.record_event(
++                            EngineCoreEventType.PREEMPTED, scheduled_timestamp
++                        )
++
++                    self.queue_manager.update_idxs_after_preemption()
++                    preempted_reqs.append(req)
++                    preempted_req_ids.add(req.request_id)
++
++        self.running, self.waiting = self.queue_manager.update_queues()
+ 
+         # Check if the scheduling constraints are satisfied.
+         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
+@@ -831,6 +926,12 @@ class Scheduler(SchedulerInterface):
+         # Since some requests in the RUNNING queue may not be scheduled in
+         # this step, the total number of scheduled requests can be smaller than
+         # len(self.running).
++        if len(scheduled_new_reqs) + len(scheduled_resumed_reqs) + len(
++            scheduled_running_reqs
++        ) > len(self.running):
++            logger.debug(scheduled_new_reqs)
++            logger.debug(scheduled_resumed_reqs)
++            logger.debug(scheduled_running_reqs)
+         assert len(scheduled_new_reqs) + len(scheduled_resumed_reqs) + len(
+             scheduled_running_reqs
+         ) <= len(self.running)
+@@ -946,7 +1047,7 @@ class Scheduler(SchedulerInterface):
+             request.record_event(EngineCoreEventType.PREEMPTED, timestamp)
+ 
+         # Put the request back to the waiting queue.
+-        self.waiting.prepend_request(request)
++        # self.waiting.prepend_request(request)
+ 
+     def _update_after_schedule(self, scheduler_output: SchedulerOutput) -> None:
+         # Advance the number of computed tokens for the request AFTER
+@@ -1519,6 +1620,7 @@ class Scheduler(SchedulerInterface):
+                         trace_headers=request.trace_headers,
+                         routed_experts=routed_experts,
+                         num_nans_in_logits=request.num_nans_in_logits,
++                        request_md=request.request_md,
+                     )
+                 )
+             else:
+diff --git a/vllm/v1/core/sched/slo_expiration_manager.py b/vllm/v1/core/sched/slo_expiration_manager.py
+new file mode 100644
+index 000000000..9465a20f4
+--- /dev/null
++++ b/vllm/v1/core/sched/slo_expiration_manager.py
+@@ -0,0 +1,162 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++import math
++import time
++
++from vllm.v1.core.sched.queue_manager import QueueManager
++from vllm.v1.request import Request
++
++
++class SLOExpirationManager:
++    # category -> (p, k_base, rps_offset)
++    # rps_offset is only applied under the "rps" policy.
++    _CATEGORY_PARAMS = {
++        "sand": (3.5, 0.05, 0.1),
++        "pebbles": (2.5, 0.003, 0.05),
++        "rocks": (1.1, 0.00075, 0.0),
++    }
++
++    def __init__(self, queue_manager: QueueManager, policy: str = "fcfs") -> None:
++        # Supported policies:
++        # "fcfs": default fcfs
++        # "catfcfs": categorical fcfs
++        # "edf": earliest deadline first
++        # "wait-only": waiting time term only
++        # "rps": static priority + waiting time term
++
++        self.queue_manager = queue_manager
++        self.policy = policy
++
++        self.eps = 0.0001  # 1ms
++        self.min_score = 1e-12
++
++    def compute_score(
++        self,
++        request: Request,
++        avg_queue_age: float,
++        queue_age: float,
++        queue_size: int,
++        avg_queue_size: float,
++    ):
++        if self.policy not in ("rps", "wait-only"):
++            return 1
++
++        params = self._CATEGORY_PARAMS.get(request.request_md.category)
++        if params is None:
++            return 1
++        p, k_base, rps_offset = params
++
++        len_ratio = queue_size / (avg_queue_size + self.eps)
++        age_ratio = queue_age / (avg_queue_age + self.eps)
++
++        w_age = 0.7
++        w_len = 0.3
++        excess = max(0.0, w_age * (age_ratio - 1) + w_len * (len_ratio - 1))
++
++        B_max = 3.0
++        theta = 2.0
++        boost = round(1 + (B_max - 1) * (1 - math.exp(-theta * excess)))
++
++        offset = rps_offset if self.policy == "rps" else 0.0
++        k_eff = k_base * boost
++        return 1 - math.exp(-k_eff * (request.age**p)) + offset
++
++    def update_priorities(self, requests: dict[str, Request]) -> dict[str, Request]:
++        if self.policy == "fcfs":
++            for req in requests.values():
++                # Set priority once
++                if req.priority and req.priority > 0:
++                    continue
++                req.priority = int(req.arrival_time * 10**7)
++            return requests
++
++        if self.policy == "catfcfs":
++            for req in requests.values():
++                # Set priority once
++                if req.priority and req.priority > 0:
++                    continue
++
++                if not (req.request_md and req.request_md.category):
++                    req.priority = 10**19 + int(req.arrival_time * 10**7)
++                    continue
++
++                # Based on the category
++                # Sand > Pebbles > Rocks
++                # Tiebreaker: arrival time (FCFS)
++                if req.request_md.category == "sand":
++                    req.priority = int(req.arrival_time * 10**7)
++                if req.request_md.category == "pebbles":
++                    req.priority = 10**18 + int(req.arrival_time * 10**7)
++                if req.request_md.category == "rocks":
++                    req.priority = 10**19 + int(req.arrival_time * 10**7)
++            return requests
++
++        if self.policy == "edf":
++            now = time.time()
++            for req in requests.values():
++                req.priority = req.request_md.slo - (now - req.arrival_time)
++
++            scored = sorted(
++                requests.values(), key=lambda r: (r.priority, r.arrival_time)
++            )
++
++            for i, req in enumerate(scored):
++                # Priorities must be integers higher than 0
++                req.priority = i + 1
++
++            return {req.request_id: req for req in scored}
++
++        avg_sand_queue_size = self.queue_manager.sand_queue_size.ema
++        avg_pebbles_queue_size = self.queue_manager.pebbles_queue_size.ema
++        avg_rocks_queue_size = self.queue_manager.rocks_queue_size.ema
++
++        sand_queue_size = self.queue_manager.sand_queue_size.curr
++        pebbles_queue_size = self.queue_manager.pebbles_queue_size.curr
++        rocks_queue_size = self.queue_manager.rocks_queue_size.curr
++
++        avg_sand_queue_age = self.queue_manager.sand_queue_age.ema
++        avg_pebbles_queue_age = self.queue_manager.pebbles_queue_age.ema
++        avg_rocks_queue_age = self.queue_manager.rocks_queue_age.ema
++
++        sand_queue_age = self.queue_manager.sand_queue_age.curr
++        pebbles_queue_age = self.queue_manager.pebbles_queue_age.curr
++        rocks_queue_age = self.queue_manager.rocks_queue_age.curr
++
++        # Compute urgency scores
++        for request in requests.values():
++            if request.request_md.category == "sand":
++                score = self.ws * self.compute_score(
++                    request,
++                    avg_sand_queue_age,
++                    sand_queue_age,
++                    sand_queue_size,
++                    avg_sand_queue_size,
++                )
++            elif request.request_md.category == "pebbles":
++                score = self.wp * self.compute_score(
++                    request,
++                    avg_pebbles_queue_age,
++                    pebbles_queue_age,
++                    pebbles_queue_size,
++                    avg_pebbles_queue_size,
++                )
++            elif request.request_md.category == "rocks":
++                score = self.wr * self.compute_score(
++                    request,
++                    avg_rocks_queue_age,
++                    rocks_queue_age,
++                    rocks_queue_size,
++                    avg_rocks_queue_size,
++                )
++            else:
++                request.priority = -math.log(self.min_score)
++                continue
++            request.priority = -math.log(score)
++
++        scored = sorted(requests.values(), key=lambda r: (r.priority, r.arrival_time))
++
++        for i, req in enumerate(scored):
++            # Priorities must be integers higher than 0
++            req.priority = i + 1
++
++        return {req.request_id: req for req in scored}
+diff --git a/vllm/v1/engine/__init__.py b/vllm/v1/engine/__init__.py
+index f6c80055b..7b74a0836 100644
+--- a/vllm/v1/engine/__init__.py
++++ b/vllm/v1/engine/__init__.py
+@@ -14,6 +14,7 @@ import torch
+ from vllm.lora.request import LoRARequest
+ from vllm.multimodal.inputs import MultiModalFeatureSpec
+ from vllm.pooling_params import PoolingParams
++from vllm.request_metadata import RequestMetadata
+ from vllm.sampling_params import SamplingParams
+ from vllm.v1.metrics.stats import PrefillStats, SchedulerStats
+ from vllm.v1.outputs import LogprobsLists, LogprobsTensors
+@@ -128,6 +129,8 @@ class EngineCoreRequest(
+     # KV-transfer request is rejected on the D node before engine admission.
+     abort_immediately: bool = False
+ 
++    request_md: RequestMetadata | None = None
++
+     @property
+     def params(self) -> SamplingParams | PoolingParams:
+         """Return the processed params (sampling or pooling)."""
+@@ -192,6 +195,8 @@ class EngineCoreOutput(
+     # A value greater than 0 indicates that the output is corrupted.
+     num_nans_in_logits: int = 0
+ 
++    request_md: RequestMetadata | None = None
++
+     @property
+     def finished(self) -> bool:
+         return self.finish_reason is not None
+diff --git a/vllm/v1/engine/async_llm.py b/vllm/v1/engine/async_llm.py
+index 32cc3c0d2..2535fc6bf 100644
+--- a/vllm/v1/engine/async_llm.py
++++ b/vllm/v1/engine/async_llm.py
+@@ -29,6 +29,7 @@ from vllm.outputs import STREAM_FINISHED, PoolingRequestOutput, RequestOutput
+ from vllm.pooling_params import PoolingParams
+ from vllm.renderers import renderer_from_config
+ from vllm.renderers.inputs.preprocess import extract_prompt_components
++from vllm.request_metadata import RequestMetadata
+ from vllm.sampling_params import RequestOutputKind, SamplingParams
+ from vllm.tasks import SupportedTask
+ from vllm.tokenizers import TokenizerLike
+@@ -43,6 +44,14 @@ from vllm.v1.engine.exceptions import EngineDeadError, EngineGenerateError
+ from vllm.v1.engine.input_processor import InputProcessor
+ from vllm.v1.engine.output_processor import OutputProcessor, RequestOutputCollector
+ from vllm.v1.engine.parallel_sampling import ParentRequest
++from vllm.v1.engine.prefill_time_estimator import PrefillTimeEstimator
++from vllm.v1.engine.request_classifier import (
++    BaseRequestClassifier,
++    DummyRequestClassifier,
++    NaiveRequestClassifier,
++    SmartRequestClassifier,
++)
++from vllm.v1.engine.slo_registry import SLORegistry
+ from vllm.v1.executor import Executor
+ from vllm.v1.metrics.loggers import (
+     StatLoggerFactory,
+@@ -199,6 +208,18 @@ class AsyncLLM(EngineClient):
+         else:
+             self.profiler = None
+ 
++        self.prefill_time_estimator = PrefillTimeEstimator(self.model_config.model)
++
++        self.request_classifier: BaseRequestClassifier
++        if vllm_config.classifier == "smart":
++            self.request_classifier = SmartRequestClassifier(self.model_config.model)
++        elif vllm_config.classifier == "naive":
++            self.request_classifier = NaiveRequestClassifier()
++        else:
++            self.request_classifier = DummyRequestClassifier()
++
++        self.slo_registry = SLORegistry(vllm_config.slo_registry_files)
++
+     @classmethod
+     def from_vllm_config(
+         cls,
+@@ -405,6 +426,19 @@ class AsyncLLM(EngineClient):
+         index: int,
+         queue: RequestOutputCollector,
+     ):
++        # Estimate prefill time (encoder and llm)
++        estimated_prefill_time = self.prefill_time_estimator.estimate(request)
++        request.request_md = RequestMetadata(estimated_time=estimated_prefill_time)
++
++        # Classify Request
++        category = self.request_classifier.classify(request)
++        request.request_md.category = category
++
++        # Get SLO from the registry
++        request.request_md.slo = self.slo_registry.get_slo_safe(
++            request.request_id, 1000.0
++        )
++
+         # Add the request to OutputProcessor (this process).
+         self.output_processor.add_request(request, prompt, parent_req, index, queue)
+ 
+diff --git a/vllm/v1/engine/llm_engine.py b/vllm/v1/engine/llm_engine.py
+index 62c7d0e2a..724bb75f6 100644
+--- a/vllm/v1/engine/llm_engine.py
++++ b/vllm/v1/engine/llm_engine.py
+@@ -22,6 +22,7 @@ from vllm.outputs import PoolingRequestOutput, RequestOutput
+ from vllm.pooling_params import PoolingParams
+ from vllm.renderers import renderer_from_config
+ from vllm.renderers.inputs.preprocess import extract_prompt_components
++from vllm.request_metadata import RequestMetadata
+ from vllm.sampling_params import SamplingParams
+ from vllm.tasks import SupportedTask
+ from vllm.tokenizers import TokenizerLike
+@@ -32,6 +33,13 @@ from vllm.v1.engine.core_client import EngineCoreClient
+ from vllm.v1.engine.input_processor import InputProcessor
+ from vllm.v1.engine.output_processor import OutputProcessor
+ from vllm.v1.engine.parallel_sampling import ParentRequest
++from vllm.v1.engine.prefill_time_estimator import PrefillTimeEstimator
++from vllm.v1.engine.request_classifier import (
++    BaseRequestClassifier,
++    DummyRequestClassifier,
++    NaiveRequestClassifier,
++    SmartRequestClassifier,
++)
+ from vllm.v1.executor import Executor
+ from vllm.v1.metrics.loggers import StatLoggerFactory, StatLoggerManager
+ from vllm.v1.metrics.reader import Metric, get_metrics_snapshot
+@@ -131,6 +139,16 @@ class LLMEngine:
+         # Don't keep the dummy data in memory
+         self.reset_mm_cache()
+ 
++        self.prefill_time_estimator = PrefillTimeEstimator(self.model_config.model)
++
++        self.request_classifier: BaseRequestClassifier
++        if vllm_config.classifier == "smart":
++            self.request_classifier = SmartRequestClassifier(self.model_config.model)
++        elif vllm_config.classifier == "naive":
++            self.request_classifier = NaiveRequestClassifier()
++        else:
++            self.request_classifier = DummyRequestClassifier()
++
+     @classmethod
+     def from_vllm_config(
+         cls,
+@@ -251,6 +269,14 @@ class LLMEngine:
+             )
+             prompt_text, _, _ = extract_prompt_components(self.model_config, prompt)
+ 
++            # Estimate prefill time (encoder and llm)
++            estimated_prefill_time = self.prefill_time_estimator.estimate(request)
++            request.request_md = RequestMetadata(estimated_time=estimated_prefill_time)
++
++            # Classify Request
++            category = self.request_classifier.classify(request)
++            request.request_md.category = category
++
+         self.input_processor.assign_request_id(request)
+ 
+         req_id = request.request_id
+diff --git a/vllm/v1/engine/output_processor.py b/vllm/v1/engine/output_processor.py
+index e1032cfd1..1c84698d2 100644
+--- a/vllm/v1/engine/output_processor.py
++++ b/vllm/v1/engine/output_processor.py
+@@ -655,6 +655,8 @@ class OutputProcessor:
+                 stop_reason,
+                 kv_transfer_params,
+             ):
++                if isinstance(request_output, RequestOutput):
++                    request_output.request_md = engine_core_output.request_md
+                 if req_state.streaming_input:
+                     request_output.finished = False
+ 
+diff --git a/vllm/v1/engine/prefill_time_estimator.py b/vllm/v1/engine/prefill_time_estimator.py
+new file mode 100644
+index 000000000..04af2a6da
+--- /dev/null
++++ b/vllm/v1/engine/prefill_time_estimator.py
+@@ -0,0 +1,120 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++from vllm.v1.engine import EngineCoreRequest
++
++
++class PrefillTimeEstimator:
++    # intercept, slope
++    cache: dict[str, dict[str, list[float]]] = {
++        # "llava-onevision-qwen2-7b-ov-chat-hf": { # A100 40GB
++        #     "text": [0.00965129201572229, 7.114258735058774e-05],
++        #     "image": [0.04782053127560487, 9.877444206212872e-05],
++        #     "video": [0.04223119259146503, 0.0001246108308443217],
++        # },
++        "llava-onevision-qwen2-0.5b-ov-hf": {
++            "text": [0.004604158101438752, 5.9372636711886714e-06],
++            "image": [0.03001293012286582, 1.9404172214649895e-05],
++            "video": [0.0469874803962724, 4.5308649933085995e-05],
++        },
++        "Qwen2.5-VL-3B-Instruct": {
++            "text": [0.007208822979232461, 3.212644982267238e-05],
++            "image": [0.050937172928859895, 5.503506783382055e-05],
++            "video": [-0.07084554337453441, 0.0001986696026438678],
++        },
++        "gemma-3-4b-it": {
++            "text": [0.008599597649873437, 3.7734497648640356e-05],
++            "image": [0.09434673783835049, 6.027112249284893e-05],
++            "video": [0.08565421916907176, 0.00022505744889195968],
++        },
++        "Qwen2.5-VL-7B-Instruct": {
++            "text": [0.010600883528447555, 6.869224917719017e-05],
++            "image": [0.03958721215825617, 0.0001511681623505576],
++            "video": [-0.07786893755228164, 0.0002484057176874437],
++        },
++        "gemma-3-12b-it": {
++            "text": [0.01990582858026893, 0.00011674479041670197],
++            "image": [0.1545372152701027, 1.040198840200667e-05],
++            "video": [0.11509276966127151, 0.000310104740159892],
++        },
++        "pixtral-12b": {
++            "text": [0.027850550001887853, 0.0001341853661065232],
++            "image": [0.06446421307749874, 0.0001438403242202692],
++            "video": [-0.6454059303130606, 0.0002304761042188167],
++        },
++        "llava-onevision-qwen2-7b-ov-chat-hf": {
++            "text": [0.010432596427509634, 2.821511489589937e-05],
++            "image": [0.01909173512954794, 3.100683525894328e-05],
++            "video": [0.004301185911683977, 4.364467756044445e-05],
++        },
++        "llava-onevision-qwen2-72b-ov-chat-hf": {
++            "text": [0.13995626685042, 9.287370662521207e-05],
++            "image": [0.0049559710544814315, 0.00018299030347626572],
++            "video": [0.036683511410107145, 0.0001910774284488148],
++        },
++        "InternVL3_5-38B-HF": {
++            "text": [0.07819333537157558, 4.5013811089605755e-05],
++            "image": [0.03669317742310902, 0.0002018676056106019],
++            "video": [0.02770202669398342, 0.00021005774304801722],
++        },
++        "Qwen3.5-27B": {
++            "text": [0.03530299508746881, 6.027831731651396e-05],
++            "image": [0.046704020247776305, 5.812866086336343e-05],
++            "video": [0.07076368751773693, 0.00010668299209756563],
++        },
++        "gemma-4-31B-it": {
++            "text": [0.0840129659883102, 5.063257790726964e-05],
++            "image": [0.06028828101261766, 7.662999996682579e-05],
++            "video": [-0.17555549495171396, 0.0006600616225413104],
++        },
++    }
++
++    def __init__(self, model: str) -> None:
++        model_name = model.split("/")[-1]
++
++        self.intercept_text: float = 0.0
++        self.slope_text: float = 0.0
++        self.intercept_image: float = 0.0
++        self.slope_image: float = 0.0
++        self.intercept_video: float = 0.0
++        self.slope_video: float = 0.0
++
++        if model_name in self.cache:
++            self.intercept_text = self.cache[model_name]["text"][0]
++            self.slope_text = self.cache[model_name]["text"][1]
++            self.intercept_image = self.cache[model_name]["image"][0]
++            self.slope_image = self.cache[model_name]["image"][1]
++            self.intercept_video = self.cache[model_name]["video"][0]
++            self.slope_video = self.cache[model_name]["video"][1]
++
++    def estimate(self, request: EngineCoreRequest) -> float:
++        assert request.prompt_token_ids is not None, "prompt_token_ids must not be None"
++
++        # Video inputs
++        if (
++            request.mm_features
++            and request.mm_features[0] is not None
++            and request.mm_features[0].modality == "video"
++        ) or (
++            request.mm_features
++            and len(request.mm_features) > 1
++            and request.mm_features[0] is not None
++            and request.mm_features[0].modality == "image"
++        ):
++            return self.intercept_video + self.slope_video * len(
++                request.prompt_token_ids
++            )
++
++        # Image inputs
++        if (
++            request.mm_features
++            and len(request.mm_features) == 1
++            and request.mm_features[0] is not None
++            and request.mm_features[0].modality == "image"
++        ):
++            return self.intercept_image + self.slope_image * len(
++                request.prompt_token_ids
++            )
++
++        # Text inputs
++        return self.intercept_text + self.slope_text * len(request.prompt_token_ids)
+diff --git a/vllm/v1/engine/request_classifier.py b/vllm/v1/engine/request_classifier.py
+new file mode 100644
+index 000000000..a17285cec
+--- /dev/null
++++ b/vllm/v1/engine/request_classifier.py
+@@ -0,0 +1,153 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++import os
++from abc import ABC, abstractmethod
++
++import joblib
++
++from vllm.v1.engine import EngineCoreRequest
++
++
++class BaseRequestClassifier(ABC):
++    """Abstract base class for request classifiers."""
++
++    @abstractmethod
++    def classify(self, request: EngineCoreRequest) -> str:
++        """
++        Classify a request and return a queue/category identifier.
++
++        Args:
++            request: The engine core request to classify.
++
++        Returns:
++            A string identifier representing the request's classification.
++        """
++        ...
++
++
++class DummyRequestClassifier(BaseRequestClassifier):
++    # Single queue implementation for naive-aging policy
++    def classify(self, request: EngineCoreRequest) -> str:
++        return "rocks"
++
++
++class NaiveRequestClassifier(BaseRequestClassifier):
++    def classify(self, request: EngineCoreRequest) -> str:
++        # Video inputs & multi image inputs
++        if (
++            request.mm_features
++            and request.mm_features[0] is not None
++            and request.mm_features[0].modality == "video"
++        ) or (
++            request.mm_features
++            and len(request.mm_features) > 1
++            and request.mm_features[0] is not None
++            and request.mm_features[0].modality == "image"
++        ):
++            return "rocks"
++
++        # Single image inputs
++        if (
++            request.mm_features
++            and len(request.mm_features) == 1
++            and request.mm_features[0] is not None
++            and request.mm_features[0].modality == "image"
++        ):
++            return "pebbles"
++
++        # Text
++        return "sand"
++
++
++class SmartRequestClassifier(BaseRequestClassifier):
++    cache: dict[str, dict[str, int | list[int]]] = {
++        "llava-onevision-qwen2-0.5b-ov-hf": {
++            "image_token_index": 151646,
++            "video_token_index": 151647,
++            "classes": [1, 0, 2],  # [sand, pebbles, rocks]
++        },
++        "Qwen2.5-VL-3B-Instruct": {
++            "image_token_index": 151655,
++            "video_token_index": 151656,
++            "classes": [2, 0, 1],
++        },
++        "gemma-3-4b-it": {
++            "image_token_index": 262144,
++            "video_token_index": -1,
++            "classes": [2, 0, 1],
++        },
++        "llava-onevision-qwen2-7b-ov-chat-hf": {
++            "image_token_index": 151646,
++            "video_token_index": 151647,
++            "classes": [1, 0, 2],
++        },
++        "Qwen2.5-VL-7B-Instruct": {
++            "image_token_index": 151655,
++            "video_token_index": 151656,
++            "classes": [2, 0, 1],
++        },
++        "gemma-3-12b-it": {
++            "image_token_index": 262144,
++            "video_token_index": -1,
++            "classes": [2, 0, 1],
++        },
++        "pixtral-12b": {
++            "image_token_index": 10,
++            "video_token_index": -1,
++            "classes": [1, 0, 2],
++        },
++        "llava-onevision-qwen2-72b-ov-chat-hf": {
++            "image_token_index": 151646,
++            "video_token_index": 151647,
++            "classes": [1, 0, 2],
++        },
++        "InternVL3_5-38B-HF": {
++            "image_token_index": 151671,
++            "video_token_index": 151678,
++            "classes": [1, 0, 2],
++        },
++        "gemma-4-31B-it": {
++            "image_token_index": 258880,
++            "video_token_index": 258884,
++            "classes": [2, 0, 1],
++        },
++        "Qwen3.5-27B": {
++            "image_token_index": 248056,
++            "video_token_index": 248057,
++            "classes": [2, 0, 1],
++        },
++    }
++
++    def __init__(self, model: str) -> None:
++        model_name = model.split("/")[-1]
++
++        if model_name in self.cache:
++            entry = self.cache[model_name]
++            classifiers_path = (
++                "/home/konstantinos.papaioannou/rps-serve/artifacts/classifiers"
++            )
++            path = os.path.join(classifiers_path, f"{model_name}.pkl")
++            self.model = joblib.load(path)
++            self.image_token_index: int = int(entry["image_token_index"])  # type: ignore[arg-type]
++            self.video_token_index: int = int(entry["video_token_index"])  # type: ignore[arg-type]
++            classes = entry["classes"]
++            assert isinstance(classes, list)
++            self.cluster_to_category: dict[int, str] = {
++                classes[0]: "sand",
++                classes[1]: "pebbles",
++                classes[2]: "rocks",
++            }
++
++    def classify(self, request: EngineCoreRequest) -> str:
++        assert request.prompt_token_ids is not None, "prompt_token_ids must not be None"
++        assert request.request_md is not None, "request_md must not be None"
++
++        modality_tokens_cnt = request.prompt_token_ids.count(
++            self.image_token_index
++        ) or request.prompt_token_ids.count(self.video_token_index)
++
++        x = [[request.request_md.estimated_time, modality_tokens_cnt]]
++        cluster = self.model.predict(x)[0]
++
++        return self.cluster_to_category[int(cluster)]
+diff --git a/vllm/v1/engine/slo_registry.py b/vllm/v1/engine/slo_registry.py
+new file mode 100644
+index 000000000..48734f90a
+--- /dev/null
++++ b/vllm/v1/engine/slo_registry.py
+@@ -0,0 +1,70 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++import json
++from pathlib import Path
++
++
++class SLORegistry:
++    def __init__(self, filepaths: list[str]):
++        """
++        Initializes the component and calculates request-to-SLO mappings from
++        JSONL log files.
++
++        :param filepaths: A single path (str/Path) or a list of paths to JSONL files.
++        """
++        self.filepaths = [Path(fp) for fp in filepaths]
++
++        self._req_to_slo: dict[str, float] = {}
++
++        # Automatically load and parse data upon initialization
++        self._load_all_slo_data()
++
++    def _load_all_slo_data(self) -> None:
++        """Streams JSONL files line-by-line, calculates SLO, and stores it."""
++        for filepath in self.filepaths:
++            try:
++                # Open the file and iterate over lines dynamically (Memory Efficient)
++                with open(filepath, encoding="utf-8") as file:
++                    for line_num, line in enumerate(file, start=1):
++                        cleaned_line = line.strip()
++                        if not cleaned_line:
++                            continue  # Skip empty lines
++
++                        try:
++                            entry = json.loads(cleaned_line)
++
++                            req_id = entry.get("id")
++                            arrival = entry.get("arrival_time")
++                            finished = entry.get("finished_time")
++
++                            # Validate required fields exist
++                            if req_id and arrival is not None and finished is not None:
++                                # SLO = finished_time - arrival_time
++                                self._req_to_slo[req_id] = finished - arrival
++
++                        except json.JSONDecodeError:
++                            print(
++                                "Warning: Skipping malformed JSON on line "
++                                f"{line_num} in {filepath}"
++                            )
++                            continue
++
++            except FileNotFoundError as err:
++                raise FileNotFoundError(
++                    f"Initialization failed: {filepath} does not exist."
++                ) from err
++
++    def get_slo(self, req_id: str) -> float:
++        """
++        Retrieves the calculated SLO (duration) for a given request ID.
++        """
++        if req_id not in self._req_to_slo:
++            raise KeyError(f"Request ID '{req_id}' not found in SLO registry.")
++
++        return self._req_to_slo[req_id]
++
++    def get_slo_safe(self, req_id: str, default: float = 0.0) -> float:
++        """
++        A safer lookup method that returns a default value if the ID doesn't exist.
++        """
++        return self._req_to_slo.get(req_id, default)
+diff --git a/vllm/v1/request.py b/vllm/v1/request.py
+index 26cc82fc4..0222a639b 100644
+--- a/vllm/v1/request.py
++++ b/vllm/v1/request.py
+@@ -12,6 +12,7 @@ import torch
+ 
+ from vllm.multimodal.inputs import MultiModalFeatureSpec
+ from vllm.pooling_params import PoolingParams
++from vllm.request_metadata import RequestMetadata
+ from vllm.sampling_params import SamplingParams
+ from vllm.utils import length_from_prompt_token_ids_or_embeds
+ from vllm.v1.engine import (
+@@ -77,6 +78,7 @@ class Request:
+         reasoning_ended: bool | None = None,
+         reasoning_parser_kwargs: dict[str, Any] | None = None,
+         abort_immediately: bool = False,
++        request_md: RequestMetadata | None = None,
+     ) -> None:
+         self.request_id = request_id
+         self.client_index = client_index
+@@ -186,6 +188,8 @@ class Request:
+         # the scheduler so the connector's request_finished hook runs.
+         self.abort_immediately = abort_immediately
+ 
++        self.request_md = request_md
++
+     @classmethod
+     def from_engine_core_request(
+         cls,
+@@ -211,6 +215,7 @@ class Request:
+             reasoning_ended=request.reasoning_ended,
+             reasoning_parser_kwargs=request.reasoning_parser_kwargs,
+             abort_immediately=request.abort_immediately,
++            request_md=request.request_md,
+         )
+ 
+     def append_output_token_ids(
