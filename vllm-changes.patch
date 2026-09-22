@@ -1,0 +1,128 @@
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/p2p/p2p_nccl_connector.py b/vllm/distributed/kv_transfer/kv_connector/v1/p2p/p2p_nccl_connector.py
+index ce228b3c6..63e96c6d4 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/p2p/p2p_nccl_connector.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/p2p/p2p_nccl_connector.py
+@@ -431,7 +431,9 @@ class P2pNcclConnector(KVConnectorBase_V1):
+                 num_scheduled_tokens = scheduler_output.num_scheduled_tokens[req_id]
+                 num_tokens = num_scheduled_tokens + num_computed_tokens
+                 assert req_id in self.chunked_prefill
+-                assert new_block_ids is not None
++
++                if new_block_ids is None:
++                    continue
+                 block_ids = new_block_ids[0]
+                 if not resumed_from_preemption:
+                     block_ids = self.chunked_prefill[req_id][0] + block_ids
+@@ -472,7 +474,7 @@ class P2pNcclConnector(KVConnectorBase_V1):
+                     block_size=self._block_size,
+                 )
+ 
+-        self._requests_need_load.clear()
++        # self._requests_need_load.clear()
+         return meta
+ 
+     def request_finished(
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/p2p/p2p_nccl_engine.py b/vllm/distributed/kv_transfer/kv_connector/v1/p2p/p2p_nccl_engine.py
+index 1c1410f39..9eac26b56 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/p2p/p2p_nccl_engine.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/p2p/p2p_nccl_engine.py
+@@ -3,6 +3,7 @@
+ 
+ import json
+ import logging
++import math
+ import os
+ import threading
+ import time
+@@ -315,14 +316,18 @@ class P2pNcclEngine:
+             with self.recv_store_cv:
+                 while tensor_id not in self.recv_store:
+                     self.recv_store_cv.wait()
+-                tensor = self.recv_store[tensor_id]
++                tensor = self.recv_store.pop(tensor_id)
+ 
+             if tensor is not None:
+                 if isinstance(tensor, tuple):
+                     addr, dtype, shape = tensor
++                    elem_size = torch.tensor([], dtype=dtype).element_size()
++                    tensor_size = math.prod(shape) * elem_size
+                     tensor = self.pool.load_tensor(addr, dtype, shape, self.device)
++                    self.pool.free(addr)
+                 else:
+-                    self.buffer_size -= tensor.element_size() * tensor.numel()
++                    tensor_size = tensor.element_size() * tensor.numel()
++                self.buffer_size -= tensor_size
+             else:
+                 duration = time.time() - start_time
+                 logger.warning(
+@@ -415,8 +420,8 @@ class P2pNcclEngine:
+                             data,
+                             addr,
+                         )
+-                    else:
+-                        self.buffer_size += tensor_size
++
++                    self.buffer_size += tensor_size
+ 
+                 except torch.cuda.OutOfMemoryError:
+                     self.router_socket.send_multipart([remote_address, b"1"])
+@@ -553,24 +558,27 @@ class P2pNcclEngine:
+ 
+         # Clear the buffer upon request completion.
+         for request_id in finished_req_ids:
+-            for layer_name in no_compile_layers:
+-                tensor_id = request_id + "#" + layer_name
+-                if tensor_id in self.recv_store:
+-                    with self.recv_store_cv:
+-                        tensor = self.recv_store.pop(tensor_id, None)
+-                        self.send_request_id_to_tensor_ids.pop(request_id, None)
+-                        self.recv_request_id_to_tensor_ids.pop(request_id, None)
+-                    if isinstance(tensor, tuple):
+-                        addr, _, _ = tensor
+-                        self.pool.free(addr)
+-
+-        # TODO:Retrieve requests that have already sent the KV cache.
+-        finished_sending: set[str] = set()
+-
+-        # TODO:Retrieve requests that have already received the KV cache.
+-        finished_recving: set[str] = set()
+-
+-        return finished_sending or None, finished_recving or None
++            # Clean up any tensors that were received but never consumed
++            # (e.g. request was cancelled before decode used them)
++            tensor_ids_to_clean = self.recv_request_id_to_tensor_ids.pop(
++                request_id, set()
++            )
++            with self.recv_store_cv:
++                for tensor_id in tensor_ids_to_clean:
++                    tensor = self.recv_store.pop(tensor_id, None)
++                    if tensor is not None:
++                        if isinstance(tensor, tuple):
++                            addr, dtype, shape = tensor
++                            elem_size = torch.tensor([], dtype=dtype).element_size()
++                            tensor_size = math.prod(shape) * elem_size
++                            self.pool.free(addr)
++                        else:
++                            tensor_size = tensor.element_size() * tensor.numel()
++                        self.buffer_size -= tensor_size
++
++            self.send_request_id_to_tensor_ids.pop(request_id, None)
++
++        return None, None
+ 
+     def ping(self):
+         sock = self.context.socket(zmq.DEALER)
+diff --git a/vllm/model_executor/models/utils.py b/vllm/model_executor/models/utils.py
+index a6c463393..7c97a467f 100644
+--- a/vllm/model_executor/models/utils.py
++++ b/vllm/model_executor/models/utils.py
+@@ -432,7 +432,8 @@ def _flatten_embeddings(embeddings: NestedTensors) -> torch.Tensor:
+         # Flatten all but the last dimension.
+         return embeddings.flatten(0, -2)
+ 
+-    return torch.cat(tuple(_flatten_embeddings(t) for t in embeddings))
++    local_device = torch.accelerator.current_device_index()
++    return torch.cat(tuple(_flatten_embeddings(t).to(local_device) for t in embeddings))
+ 
+ 
+ def _embedding_count_expression(embeddings: NestedTensors) -> str:
