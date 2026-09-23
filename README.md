@@ -139,6 +139,16 @@ uv pip install -e .
 
 ## 4. Workload Generation
 
+To automatically download raw data and generate the workloads, run:
+
+```sh
+bash generate_workloads.sh
+```
+
+**Expected runtime:** ~10 minutes
+
+### 4.1 Ingest Datasets
+
 (Optional) To ingest the datasets, run:
 
 ```sh
@@ -156,11 +166,15 @@ cd workloads
 curl -L "https://cloud.software.imdea.org/index.php/s/fw9DJZ8tkLY9RB6/download" | tar -xf - -C .
 ```
 
+### 4.2 Generate Modality Workloads
+
 To generate workloads for each modality, run:
 
 ```sh
 python3 preprocessing.py --text --image --video
 ```
+
+### 4.3 Generate Mixed Workloads
 
 To generate the mixed workloads used in the paper, run:
 
@@ -168,9 +182,7 @@ To generate the mixed workloads used in the paper, run:
 python3 generation.py
 ```
 
-**Expected runtime:** ~15 minutes
-
-### 5. Download Models
+## 5. Download Models
 
 To download LLaVA-7B (~30GB), run:
 
@@ -181,6 +193,14 @@ git lfs install
 git clone https://huggingface.co/llava-hf/llava-onevision-qwen2-7b-ov-chat-hf
 ```
 
+(Optional) To download the rest of the models:
+
+```
+git clone https://huggingface.co/llava-hf/llava-onevision-qwen2-72b-ov-chat-hf # 273 GB llava-ov-large
+git clone https://huggingface.co/OpenGVLab/InternVL3_5-38B-HF # 144 GB
+git clone https://huggingface.co/google/gemma-4-31B-it # 117 GB
+git clone https://huggingface.co/Qwen/Qwen3.5-27B # 104 GB
+```
 ---
 
 ## 6. Minimal Working Example
