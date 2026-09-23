@@ -8,8 +8,6 @@ from typing import LiteralString, List, Optional, Union
 from dataclasses import dataclass
 from tqdm import tqdm
 
-from llmperf.config.datasets import get_dataset_by_name, get_dataset_by_alias
-from llmperf.config.workloads import get_workload_by_name, get_workload_by_alias
 from llmperf.ingestion.dataset import Dataset
 from llmperf.preprocessing.config import PreprocessingConfig
 from llmperf.preprocessing.workload import Request, Workload

@@ -10,7 +10,7 @@ Artifact for **"Rocks, Pebbles and Sand: Modality-aware Scheduling for Multimoda
 
 ## 1. Artifact Overview
 
-RPS-Serve is a modality-aware request scheduling framework for multimodal LLM (MLLM) serving, built on top of vLLM (v0.19.2). This artifact contains:
+RPS-Serve is a modality-aware request scheduling framework for multimodal LLM (MLLM) serving, built on top of vLLM (v0.21.1). This artifact contains:
 
 - `artifacts/`: Experiment outputs and figures
 
@@ -66,11 +66,18 @@ GPU requirements vary by figure:
   [installation instructions](https://docs.astral.sh/uv/getting-started/installation/)
 - git-lfs:
   `sudo apt-get install git-lfs`
-- Additional Python packages: [`requirements.txt`](requirements.txt)
 
 ---
 
 ## 3. Installation
+
+To automatically set up the environments and install the dependencies, run:
+
+```sh
+bash install.sh
+```
+
+**Expected runtime:** ~15 minutes
 
 ### 3.1 RPS-Serve
 
@@ -78,10 +85,14 @@ Install RPS-Serve in a dedicated virtual environment. This environment is used
 to deploy RPS-Serve instances.
 
 ```sh
+# From the repository root
 cd rps-serve
 uv venv --python 3.12.8 --seed --managed-python
 source .venv/bin/activate
 export VLLM_USE_PRECOMPILED=1
+export VLLM_PRECOMPILED_WHEEL_COMMIT=d735968f6d634ec849268f18e3b84ceb494fee79
+export SETUPTOOLS_SCM_PRETEND_VERSION=0.21.1rc1.dev120+g70c5a0596
+export VLLM_PRECOMPILED_WHEEL_VARIANT=cu130
 uv pip install --editable . --torch-backend=cu130
 uv pip install joblib
 ```
@@ -93,10 +104,14 @@ environment is used to deploy the baseline systems: vLLM, ModServe, and
 ModServe with RPS.
 
 ```sh
+# From the repository root
 cd vllm
 uv venv --python 3.12.8 --seed --managed-python
 source .venv/bin/activate
 export VLLM_USE_PRECOMPILED=1
+export VLLM_PRECOMPILED_WHEEL_COMMIT=33ef1941e217a2126d745caec6c6130d6aec3b31
+export SETUPTOOLS_SCM_PRETEND_VERSION=0.21.1rc1.dev120+g70c5a0596
+export VLLM_PRECOMPILED_WHEEL_VARIANT=cu130
 uv pip install --editable . --torch-backend=cu130
 ```
 
@@ -117,7 +132,8 @@ Next, install the patched version of LLMPerf and GuideLLM.
 ```sh
 cd llmperf
 uv pip install -e .
-cd ../guidellm
+cd ..
+cd guidellm
 uv pip install -e .
 ```
 
@@ -126,6 +142,7 @@ uv pip install -e .
 (Optional) To ingest the datasets, run:
 
 ```sh
+# From the repository root
 cd workloads
 python3 ingestion.py --text --image --video
 ```
@@ -133,6 +150,9 @@ python3 ingestion.py --text --image --video
 To avoid the time consuming ingestion of image and video data, we provide the following:
 
 ```sh
+# From the repository root
+source .venv/bin/activate
+cd workloads
 curl -L "https://cloud.software.imdea.org/index.php/s/fw9DJZ8tkLY9RB6/download" | tar -xf - -C .
 ```
 
@@ -148,11 +168,14 @@ To generate the mixed workloads used in the paper, run:
 python3 generation.py
 ```
 
+**Expected runtime:** ~15 minutes
+
 ### 5. Download Models
 
 To download LLaVA-7B (~30GB), run:
 
 ```sh
+# From the repository root
 cd models
 git lfs install
 git clone https://huggingface.co/llava-hf/llava-onevision-qwen2-7b-ov-chat-hf
@@ -163,6 +186,7 @@ git clone https://huggingface.co/llava-hf/llava-onevision-qwen2-7b-ov-chat-hf
 ## 6. Minimal Working Example
 
 ```sh
+# From the repository root
 source .venv/bin/activate
 cd experiments
 python3 orchestrator.py --config config-rps-minimal.yaml

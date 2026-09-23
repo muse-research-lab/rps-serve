@@ -17,7 +17,7 @@ from llmperf.runner.config import RunnerConfig
 from llmperf.runner.guidellm import GuideLLMRunner
 
 from llmperf.config.models import Model
-from llmperf.config.workloads import Workload
+from llmperf.preprocessing.workload import Workload
 
 from llmperf.promptpreparation.base import DefaultPromptPreparation, DefaultExtraPromptPreparation
 from llmperf.promptpreparation.config import PromptPreparationConfig
