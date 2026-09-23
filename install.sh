@@ -60,6 +60,8 @@ install_requirements() {
   if [[ -f "${dir}/requirements.txt" ]]; then
     uv pip install -r "${dir}/requirements.txt"
   fi
+  uv pip install -e "${ROOT_DIR}/llmperf"
+  uv pip install -e "${ROOT_DIR}/guidellm"
 }
 
 install_editable() {
@@ -71,7 +73,5 @@ install_editable() {
 install_rps_serve
 install_vllm_baseline
 install_requirements "${ROOT_DIR}"
-install_editable "${ROOT_DIR}/llmperf"
-install_editable "${ROOT_DIR}/guidellm"
 
 echo "Installation complete."
