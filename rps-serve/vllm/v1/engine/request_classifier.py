@@ -124,7 +124,8 @@ class SmartRequestClassifier(BaseRequestClassifier):
 
         if model_name in self.cache:
             entry = self.cache[model_name]
-            classifiers_path = (
+            classifiers_path = os.path.join(os.path.dirname(os.getcwd()), "../artifacts/classifiers")
+            (
                 "/home/konstantinos.papaioannou/rps-serve/artifacts/classifiers"
             )
             path = os.path.join(classifiers_path, f"{model_name}.pkl")
