@@ -1,0 +1,153 @@
+import pytest
+
+from guidellm.settings import (
+    DatasetSettings,
+    Environment,
+    LoggingSettings,
+    ReportGenerationSettings,
+    Settings,
+    print_config,
+    reload_settings,
+    settings,
+)
+
+BASE_URL = (
+    "https://raw.githubusercontent.com/vllm-project/guidellm/refs/heads/gh-pages/ui/"
+)
+
+
+@pytest.mark.smoke
+def test_default_settings():
+    settings = Settings()
+    assert settings.env == Environment.PROD
+    assert settings.logging == LoggingSettings()
+    assert settings.report_generation.source.startswith(BASE_URL)
+
+
+@pytest.mark.smoke
+def test_settings_from_env_variables(mocker):
+    mocker.patch.dict(
+        "os.environ",
+        {
+            "GUIDELLM__env": "dev",
+            "GUIDELLM__logging__disabled": "true",
+            "GUIDELLM__REPORT_GENERATION__SOURCE": "http://custom.url",
+        },
+    )
+
+    settings = Settings()
+    assert settings.env == Environment.DEV
+    assert settings.logging.disabled is True
+    assert settings.report_generation.source == "http://custom.url"
+
+
+@pytest.mark.smoke
+def test_report_generation_default_source():
+    settings = Settings(env=Environment.LOCAL)
+    assert settings.report_generation.source == "http://localhost:3000/index.html"
+
+    settings = Settings(env=Environment.DEV)
+    assert (
+        settings.report_generation.source
+        == "https://raw.githubusercontent.com/vllm-project/guidellm/refs/heads/gh-pages/ui/dev/index.html"
+    )
+
+    settings = Settings(env=Environment.STAGING)
+    assert settings.report_generation.source.startswith(BASE_URL)
+
+    settings = Settings(env=Environment.PROD)
+    assert settings.report_generation.source.startswith(BASE_URL)
+
+
+@pytest.mark.sanity
+def test_logging_settings():
+    logging_settings = LoggingSettings(
+        disabled=True,
+        console_log_level="DEBUG",
+        log_file="app.log",
+        log_file_level="ERROR",
+    )
+    assert logging_settings.disabled is True
+    assert logging_settings.console_log_level == "DEBUG"
+    assert logging_settings.log_file == "app.log"
+    assert logging_settings.log_file_level == "ERROR"
+
+
+def test_report_generation_settings():
+    report_settings = ReportGenerationSettings(source="http://custom.report")
+    assert report_settings.source == "http://custom.report"
+
+
+@pytest.mark.sanity
+def test_generate_env_file():
+    settings = Settings()
+    env_file_content = settings.generate_env_file()
+    assert "GUIDELLM__LOGGING__DISABLED" in env_file_content
+
+
+@pytest.mark.sanity
+def test_reload_settings(mocker):
+    mocker.patch.dict(
+        "os.environ",
+        {
+            "GUIDELLM__env": "staging",
+            "GUIDELLM__logging__disabled": "false",
+        },
+    )
+    reload_settings()
+    assert settings.env == Environment.STAGING
+    assert settings.logging.disabled is False
+
+
+@pytest.mark.sanity
+def test_print_config(capsys):
+    print_config()
+    captured = capsys.readouterr()
+    assert "Settings:" in captured.out
+    assert "GUIDELLM__LOGGING__DISABLED" in captured.out
+
+
+@pytest.mark.sanity
+def test_dataset_settings_defaults():
+    dataset_settings = DatasetSettings()
+    assert dataset_settings.preferred_data_columns == [
+        "prompt",
+        "instruction",
+        "input",
+        "inputs",
+        "question",
+        "context",
+        "text",
+        "content",
+        "body",
+        "data",
+    ]
+    assert dataset_settings.preferred_data_splits == [
+        "test",
+        "tst",
+        "validation",
+        "val",
+        "train",
+    ]
+
+
+@pytest.mark.sanity
+def test_table_properties_defaults():
+    settings = Settings()
+    assert settings.table_border_char == "="
+    assert settings.table_headers_border_char == "-"
+    assert settings.table_column_separator_char == "|"
+
+
+@pytest.mark.sanity
+def test_settings_with_env_variables(mocker):
+    mocker.patch.dict(
+        "os.environ",
+        {
+            "GUIDELLM__DATASET__PREFERRED_DATA_COLUMNS": '["custom_column"]',
+            "GUIDELLM__TABLE_BORDER_CHAR": "*",
+        },
+    )
+    settings = Settings()
+    assert settings.dataset.preferred_data_columns == ["custom_column"]
+    assert settings.table_border_char == "*"

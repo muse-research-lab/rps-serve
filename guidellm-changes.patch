@@ -62,6 +62,34 @@ index ee819fb..6d07726 100644
 +        "request_id": ["id", "request_id"],
 +    }
 \ No newline at end of file
+diff --git a/src/guidellm/scheduler/worker_group.py b/src/guidellm/scheduler/worker_group.py
+index e391649..e906fc5 100644
+--- a/src/guidellm/scheduler/worker_group.py
++++ b/src/guidellm/scheduler/worker_group.py
+@@ -647,12 +647,12 @@ class WorkerGroupState(Generic[RequestT, ResponseT]):
+             self._state.queued_requests = len(self._queued_request_ids)
+             self._state.created_requests += 1
+         elif info.status == "pending":
+-            self._queued_request_ids.remove(info.request_id)
++            self._queued_request_ids.discard(info.request_id)
+             self._state.queued_requests = len(self._queued_request_ids)
+             self._pending_request_ids.add(info.request_id)
+             self._state.pending_requests = len(self._pending_request_ids)
+         elif info.status == "in_progress":
+-            self._pending_request_ids.remove(info.request_id)
++            self._pending_request_ids.discard(info.request_id)
+             self._state.pending_requests = len(self._pending_request_ids)
+             self._processing_request_ids.add(info.request_id)
+             self._state.processing_requests = len(self._processing_request_ids)
+@@ -660,7 +660,7 @@ class WorkerGroupState(Generic[RequestT, ResponseT]):
+             pass
+         elif info.status == "completed":
+             info.timings.finalized = finalized
+-            self._processing_request_ids.remove(info.request_id)
++            self._processing_request_ids.discard(info.request_id)
+             self._state.processing_requests = len(self._processing_request_ids)
+             self._state.processed_requests += 1
+             self._state.successful_requests += 1
 diff --git a/src/guidellm/schemas/request_stats.py b/src/guidellm/schemas/request_stats.py
 index e94e31c..b9e3e13 100644
 --- a/src/guidellm/schemas/request_stats.py
