@@ -1,7 +1,7 @@
 import numpy as np
 import random
 
-from preprocessing import Workload
+from llmperf.preprocessing.workload import Workload
 
 if __name__ == '__main__':
     """
