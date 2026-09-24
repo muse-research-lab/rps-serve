@@ -288,20 +288,12 @@ baselines whose overhead dominates at small scale. Supported by Figure 10.
 
 **Expected runtime:** ~? minutes on 4×H100
 
-### 8.3 Experiment 3
+### 8.3 Experiment 3 (Cost-model and classifier characterization)
 
 **Claim:**
 The Impact Estimator and Request Classifier produce a meaningful, learnable cost
 signal for multimodal requests (per-modality latency characterization and the 𝑘 =3
-classification choice). Supported by Figures 2, 3, and 13.
-
-(Optional) To execute charactiraztion of LLaVA-7B, run:
-
-```sh
-
-```
-
-**Expected runtime:** ~24 hours on 1×H100
+classification choice). Supported by Figure 13.
 
 To perform the ablation study, run:
 
@@ -312,11 +304,19 @@ To perform the ablation study, run:
 **Expected runtime:** ~30 minutes on 1xH100
 
 
-### 8.4 Experiment 4
+### 8.4 Experiment 4 (Workload characterization)
 
 **Claim:**
 The workload mix used in evaluation is representative of realistic multimodal
-request distributions. Supported by Figures 6 and 7, which require no GPU.
+request distributions. Supported by Figures 2, 3, 6 and 7.
+
+(Optional) To execute charactiraztion of LLaVA-7B, run:
+
+```sh
+
+```
+
+**Expected runtime:** ~24 hours on 1×H100
 
 To train the impact estimator and the request classifier, run:
 
@@ -326,7 +326,7 @@ To train the impact estimator and the request classifier, run:
 
 **Expected runtime:** ~5 minutes on CPU
 
-### 8.5 Characterization Experiments
+**Important Note:**
 
 Characterization takes very long to execute as we execute requests sequentially
 one after another. For this reason we provide our experimental results to use
