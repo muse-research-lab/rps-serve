@@ -228,6 +228,140 @@ Avg. TBT Latency: 0.019876031017663578
 
 ---
 
+## 7. Deployment Configuration
+
+To configure the different baselines, chek the following files:
+
+- RPS-Serve: `experiments/configs/config-rps-tp{1,2,4}.yaml`
+- vLLM: `experiments/configs/config-vllm-tp{1,2,4}.yaml`
+- Mod-Serve: `experiments/configs/config-mod-serve-tp{1,2}.yaml`
+- Mod-Serve & RPS: `experiments/configs/config-mod-serve-rps-tp{1,2}.yaml`
+
+---
+
+## 8. Experimentation
+
+### 8.1 Experiment 1 (End-to-end performance com-parison)
+
+**Claim:**
+Evaluated against vLLM, ModServe, and ModServe & RPS across state-of-the-art MLLMs,
+RPS-Serve increases GPU utilization by 65% and reduces TTFT by up to 9.3×, on
+average across models, compared to disaggregation-based multimodal systems.
+Supported by Figures 4, 9, 11, and 12
+
+```sh
+# From the repository root
+source .venv/bin/activate
+cd experiments
+```
+
+**Expected runtime:** ~30 minutes on 4×H100
+
+### 8.2 Experiment 2 (Scale Sensitivity)
+
+**Claim:**
+RPS-Serve’s scheduling behavior scales favorably as GPU count and tensor-parallel
+configuration (TP2/TP4) increase, in particular relative to disaggregation-based
+baselines whose overhead dominates at small scale. Supported by Figure 10.
+
+1 GPU:
+
+```sh
+
+```
+
+**Expected runtime:** ~? minutes on 1×H100
+
+2 GPUs:
+
+```sh
+
+```
+
+**Expected runtime:** ~? minutes on 2×H100
+
+4 GPUs:
+
+```sh
+
+```
+
+**Expected runtime:** ~? minutes on 4×H100
+
+### 8.3 Experiment 3
+
+**Claim:**
+The Impact Estimator and Request Classifier produce a meaningful, learnable cost
+signal for multimodal requests (per-modality latency characterization and the 𝑘 =3
+classification choice). Supported by Figures 2, 3, and 13.
+
+(Optional) To execute charactiraztion of LLaVA-7B, run:
+
+```sh
+
+```
+
+**Expected runtime:** ~24 hours on 1×H100
+
+To perform the ablation study, run:
+
+```sh
+
+```
+
+**Expected runtime:** ~30 minutes on 1xH100
+
+
+### 8.4 Experiment 4
+
+**Claim:**
+The workload mix used in evaluation is representative of realistic multimodal
+request distributions. Supported by Figures 6 and 7, which require no GPU.
+
+To train the impact estimator and the request classifier, run:
+
+```sh
+
+```
+
+**Expected runtime:** ~5 minutes on CPU
+
+### 8.5 Characterization Experiments
+
+Characterization takes very long to execute as we execute requests sequentially
+one after another. For this reason we provide our experimental results to use
+when generating figures 2 and 3, and when training the classifier and predictor.
+
+You can find all of them in:
+- `artifacts/benchmark-log-iso.jsonl`
+- `artifacts/outputs-iso`
+
+---
+
+## 9. Visualization
+
+### 9.1 Plotting Environment
+
+The plotting dependencies were already installed in step 3.3.
+You can review them in [`requirements.txt`](requirements.txt).
+
+### 9.2 Regenerating Figures from Raw Results
+
+To generate the paper's figures, run:
+
+```sh
+cd plots
+python3 characterization.py
+```
+
+The resulting figures can be found under `artifacts/figures`.
+
+| Script | Output | Paper Figure/Table |
+|---|---|---|
+| `characterization.py` | `mem_cdf.pdf` | Fig. 2a |
+| `characterization.py` | `ttft_cdf.pdf` | Fig. 2b |
+| `characterization.py` | `ttft_breakdown.pdf` | Fig. 3 |
+
 
 ## Citation
 
