@@ -400,7 +400,7 @@ The resulting figures can be found under `artifacts/figures`.
 | `ablation.py` | `ttft_by_modality_ablation.pdf` | Fig. 13a |
 | `ablation.py` | `ttft_by_modality_ablation_prio.pdf` | Fig. 13b |
 
-
+---
 
 ## Citation
 
@@ -417,6 +417,8 @@ location = {Hong Kong},
 series = {USENIX ATC '26}
 }
 ```
+
+---
 
 ## Acknowledgements
 
