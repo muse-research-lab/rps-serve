@@ -184,23 +184,28 @@ python3 generation.py
 
 ## 5. Download Models
 
-To download LLaVA-7B (~30GB), run:
+To download LLaVA-7B (~30GB) and LLaVA-72B (~273GB), run:
 
 ```sh
 # From the repository root
 cd models
 git lfs install
 git clone https://huggingface.co/llava-hf/llava-onevision-qwen2-7b-ov-chat-hf
+git clone https://huggingface.co/llava-hf/llava-onevision-qwen2-72b-ov-chat-hf
 ```
 
 (Optional) To download the rest of the models:
 
 ```
-git clone https://huggingface.co/llava-hf/llava-onevision-qwen2-72b-ov-chat-hf # 273 GB llava-ov-large
 git clone https://huggingface.co/OpenGVLab/InternVL3_5-38B-HF # 144 GB
 git clone https://huggingface.co/google/gemma-4-31B-it # 117 GB
 git clone https://huggingface.co/Qwen/Qwen3.5-27B # 104 GB
 ```
+
+The optional step above is only needed if you want to run Experiments 1–4 for
+all models reported in the paper. We do not recommend doing this during the
+artifact evaluation, because these experiments can take a very long time to complete.
+
 ---
 
 ## 6. Minimal Working Example
@@ -216,7 +221,7 @@ The orchestrator.py script:
 2. Replays a tiny mixed trace (~100 requests)
 3. Produces a metrics summary
 
-**Expected output:** Two files are created, one under artifacts/outputs and another one under artifacts/monitor-stats.
+**Expected output:** Two files are created, one under `artifacts/outputs` and another one under `artifacts/monitor-stats`.
 ```sh
 ...
 Avg. E2E Latency: 4.484160141944885
@@ -253,9 +258,10 @@ Supported by Figures 4, 9, 11, and 12
 # From the repository root
 source .venv/bin/activate
 cd experiments
+bash experiment-1.sh
 ```
 
-**Expected runtime:** ~30 minutes on 4×H100
+**Expected runtime:** ~1 hour on 4×H100
 
 ### 8.2 Experiment 2 (Scale Sensitivity)
 
@@ -267,26 +273,35 @@ baselines whose overhead dominates at small scale. Supported by Figure 10.
 1 GPU:
 
 ```sh
-
+# From the repository root
+source .venv/bin/activate
+cd experiments
+bash experiment-2.sh --gpus 1
 ```
 
-**Expected runtime:** ~? minutes on 1×H100
+**Expected runtime:** ~1 hour on 1×H100
 
 2 GPUs:
 
 ```sh
-
+# From the repository root
+source .venv/bin/activate
+cd experiments
+bash experiment-2.sh --gpus 2
 ```
 
-**Expected runtime:** ~? minutes on 2×H100
+**Expected runtime:** ~2 hours on 2×H100
 
 4 GPUs:
 
 ```sh
-
+# From the repository root
+source .venv/bin/activate
+cd experiments
+bash experiment-2.sh --gpus 4
 ```
 
-**Expected runtime:** ~? minutes on 4×H100
+**Expected runtime:** ~2 hours on 4×H100
 
 ### 8.3 Experiment 3 (Cost-model and classifier characterization)
 
@@ -298,7 +313,10 @@ classification choice). Supported by Figure 13.
 To perform the ablation study, run:
 
 ```sh
-
+# From the repository root
+source .venv/bin/activate
+cd experiments
+bash experiment-3.sh
 ```
 
 **Expected runtime:** ~30 minutes on 1xH100
@@ -313,7 +331,10 @@ request distributions. Supported by Figures 2, 3, 6 and 7.
 (Optional) To execute charactiraztion of LLaVA-7B, run:
 
 ```sh
-
+# From the repository root
+source .venv/bin/activate
+cd experiments
+bash experiment-4-char.sh
 ```
 
 **Expected runtime:** ~24 hours on 1×H100
@@ -321,7 +342,10 @@ request distributions. Supported by Figures 2, 3, 6 and 7.
 To train the impact estimator and the request classifier, run:
 
 ```sh
-
+# From the repository root
+source .venv/bin/activate
+cd experiments
+bash experiment-4-train.sh
 ```
 
 **Expected runtime:** ~5 minutes on CPU
@@ -351,7 +375,11 @@ To generate the paper's figures, run:
 
 ```sh
 cd plots
-python3 characterization.py
+python3 characterization.py # Experiment 4
+python3 evaluation.py # Experiment 4
+python3 ablation.py # Experiment 3
+python3 scale.py # Experiment 2
+python3 e2e.py # Experiment 1
 ```
 
 The resulting figures can be found under `artifacts/figures`.
@@ -361,6 +389,17 @@ The resulting figures can be found under `artifacts/figures`.
 | `characterization.py` | `mem_cdf.pdf` | Fig. 2a |
 | `characterization.py` | `ttft_cdf.pdf` | Fig. 2b |
 | `characterization.py` | `ttft_breakdown.pdf` | Fig. 3 |
+| `e2e.py` | `gpu_util_vs_lat.pdf` | Fig. 4 |
+| `evaluation.py` | `estimator_acc.pdf` | Fig. 6 |
+| `evaluation.py` | `clustering.pdf` | Fig. 7 |
+| `e2e.py` | `gpu_util_vs_lat_relative.pdf` | Fig. 9 |
+| `scale.py` | `norm_lat_baselines.pdf` | Fig. 10a |
+| `scale.py` | `norm_lat_baselines_large.pdf` | Fig. 10b |
+| `e2e.py` | `tail_normlat_ttft.pdf` | Fig. 11 |
+| `e2e.py` | `ttft_by_modality.pdf` | Fig. 12 |
+| `ablation.py` | `ttft_by_modality_ablation.pdf` | Fig. 13a |
+| `ablation.py` | `ttft_by_modality_ablation_prio.pdf` | Fig. 13b |
+
 
 
 ## Citation
