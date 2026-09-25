@@ -1,9 +1,9 @@
-model_alias: "llava-ov"
+model_alias: "llava-ov" # To be overriden by the sweep.py script
 workload_alias: "mixed-iii"
 
 baseline_config:
   name: "rps-serve"
-  model: "../models/llava-onevision-qwen2-7b-ov-chat-hf"
+  model: "../models/llava-onevision-qwen2-7b-ov-chat-hf" # To be overriden by the sweep.py script
   health_timeout: 120
   health_interval: 2
   args:
