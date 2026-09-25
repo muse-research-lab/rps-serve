@@ -1,0 +1,41 @@
+model_alias: "llava-ov" # To be overriden by the sweep.py script
+workload_alias: "mixed-iii"
+
+baseline_config:
+  name: "mod-serve-rps"
+  model: "../models/llava-onevision-qwen2-7b-ov-chat-hf" # To be overriden by the sweep.py script
+  health_timeout: 120
+  health_interval: 2
+  args:
+    encode_gpus: "0,1"
+    prefill_decode_gpus: "2,3"
+    encode_ports: "20003"
+    prefill_decode_ports: "20005"
+    tensor_parallel_size: 2
+
+runner_config:
+  target_address: "http://localhost:10001/"
+  profile: "poisson"
+  rate: 1.0 # To be replaced by the sweep.py script
+  num_requests: null
+  data_column_mapper: "custom_column_mapper"
+  data_finalizer: "custom_generative"
+  max_seconds: null
+  max_requests: 1 # To be replaced by the sweep.py script
+  engine: "mod-serve-rps"
+  approach: "tp2"
+
+monitor_config:
+  addrs:
+    - localhost:20003
+    - localhost:20005
+  gpus:
+    - 0
+    - 1
+    - 2
+    - 3
+
+prompt_config:
+  ignore_eos: true
+  temperature: 0.0
+  dynamic_max_tokens: true
