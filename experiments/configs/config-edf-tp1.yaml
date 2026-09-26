@@ -1,0 +1,36 @@
+model_alias: "llava-ov" # To be overriden by the sweep.py script
+workload_alias: "mixed-iii"
+
+baseline_config:
+  name: "edf"
+  model: "../models/llava-onevision-qwen2-7b-ov-chat-hf" # To be overriden by the sweep.py script
+  script_dir: "/home/konstantinos.papaioannou/rps-serve/scripts"
+  health_timeout: 120
+  health_interval: 2
+  args:
+    tensor_parallel_size: 1
+    scheduling_policy: "edf"
+    slo_registry_files: "../artifacts/outputs-iso/mixed-iii-ov__vllm__iso__20260601-175551__poldef__maxlendef__batchdef__blocksdef__encbatchdef__encblocksdef__gpu0.95__swap0__stratuniform__maxframe32.jsonl"
+
+runner_config:
+  target_address: "http://localhost:10001/"
+  profile: "poisson"
+  rate: 1.0 # To be replaced by the sweep.py script
+  num_requests: null
+  data_column_mapper: "custom_column_mapper"
+  data_finalizer: "custom_generative"
+  max_seconds: null
+  max_requests: 1 # To be replaced by the sweep.py script
+  engine: "edf"
+  approach: "tp1"
+
+monitor_config:
+  addrs:
+    - localhost:10001
+  gpus:
+    - 0
+
+prompt_config:
+  ignore_eos: true
+  temperature: 0.0
+  dynamic_max_tokens: true
