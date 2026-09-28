@@ -88,7 +88,6 @@ class GuideLLMRunner(AsyncBaseRunner):
         sys.stdin.flush()
         sys.stdout.flush()
         self.args.data = [data]
-        self.args.max_requests = len(data)
         self.start_time = time.time() 
         self.end_time = self.start_time
         report, _ = await benchmark_generative_text(self.args)
