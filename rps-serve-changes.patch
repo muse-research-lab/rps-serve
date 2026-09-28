@@ -1349,7 +1349,7 @@ index 000000000..9465a20f4
 +        # Compute urgency scores
 +        for request in requests.values():
 +            if request.request_md.category == "sand":
-+                score = self.ws * self.compute_score(
++                score = self.compute_score(
 +                    request,
 +                    avg_sand_queue_age,
 +                    sand_queue_age,
@@ -1357,7 +1357,7 @@ index 000000000..9465a20f4
 +                    avg_sand_queue_size,
 +                )
 +            elif request.request_md.category == "pebbles":
-+                score = self.wp * self.compute_score(
++                score = self.compute_score(
 +                    request,
 +                    avg_pebbles_queue_age,
 +                    pebbles_queue_age,
@@ -1365,7 +1365,7 @@ index 000000000..9465a20f4
 +                    avg_pebbles_queue_size,
 +                )
 +            elif request.request_md.category == "rocks":
-+                score = self.wr * self.compute_score(
++                score = self.compute_score(
 +                    request,
 +                    avg_rocks_queue_age,
 +                    rocks_queue_age,
@@ -1809,7 +1809,7 @@ index 000000000..a17285cec
 +
 +        if model_name in self.cache:
 +            entry = self.cache[model_name]
-+            classifiers_path = os.path.join(os.path.dirname(os.getcwd()), "../artifacts/classifiers")
++            classifiers_path = os.path.join(os.path.dirname(os.getcwd()), "artifacts", "classifiers")
 +            path = os.path.join(classifiers_path, f"{model_name}.pkl")
 +            self.model = joblib.load(path)
 +            self.image_token_index: int = int(entry["image_token_index"])  # type: ignore[arg-type]
