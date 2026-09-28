@@ -21,7 +21,7 @@ runner_config:
   max_seconds: null
   max_requests: 1 # To be replaced by the sweep.py script
   engine: "rps-serve"
-  approach: "tp1"
+  approach: "tp4"
 
 monitor_config:
   addrs:
