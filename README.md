@@ -194,6 +194,8 @@ git clone https://huggingface.co/llava-hf/llava-onevision-qwen2-7b-ov-chat-hf
 git clone https://huggingface.co/llava-hf/llava-onevision-qwen2-72b-ov-chat-hf
 ```
 
+**Expected runtime:** ~5 minutes (LLaVA-7B) + ~20 minutes (LLaVA-72B)
+
 (Optional) To download the rest of the models:
 
 ```
