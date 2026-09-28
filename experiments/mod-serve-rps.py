@@ -99,12 +99,11 @@ def launch_vllm_server(
     if role == "ec_consumer":
         cmd += ["--tensor-parallel-size", tp]
         cmd += ["--scheduling-policy", "priority"]
-        if model == "/srv/muse-lab/models/llava-onevision-qwen2-72b-ov-chat-hf":
-            cmd += ["--classifier", "naive"]
-        else:
-            cmd += ["--classifier", "smart"]
+        cmd += ["--classifier", "smart"]
         env = {**os.environ, "CUDA_VISIBLE_DEVICES": gpu_id}
-        cmd[0] = "/home/konstantinos.papaioannou/rps-serve/rps-v1/.venv/bin/vllm"
+        repo_root = os.path.dirname(os.getcwd())
+        rps_bin = os.path.join(repo_root, "rps-serve/.venv/bin/vllm")
+        cmd[0] = rps_bin
 
     with open(log_file, "w") as log:
         proc = subprocess.Popen(cmd, env=env, stdout=log, stderr=log)

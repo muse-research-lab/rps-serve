@@ -1,6 +1,7 @@
 
 from guidellm.benchmark import benchmark_generative_text
 from guidellm.benchmark.schemas.generative.entrypoints import BenchmarkGenerativeTextArgs
+from guidellm.settings import settings as guidellm_settings
 
 import os
 import time
@@ -15,7 +16,19 @@ class GuideLLMRunner(AsyncBaseRunner):
     
     def setup_engine(self):
         assert self.config.profile != "sweep"
-        os.environ["GUIDELLM__MAX_WORKER_PROCESSES"] = str(self.config.max_worker_processes)
+        n_workers = int(self.config.max_worker_processes)
+        # env: inherited by any worker that re-imports guidellm on spawn
+        os.environ["GUIDELLM__MAX_WORKER_PROCESSES"] = str(n_workers)
+        # settings object: already built at import time, so patch it directly
+        guidellm_settings.max_worker_processes = n_workers
+        
+        # start workers with spawn instead of fork
+        os.environ["GUIDELLM__MP_CONTEXT_TYPE"] = "spawn"
+        guidellm_settings.mp_context_type = "spawn"
+
+        print(f"GuideLLM workers={guidellm_settings.max_worker_processes}, "
+          f"mp_context={guidellm_settings.mp_context_type}")
+
 
         if isinstance(self.config.data_column_mapper, str):
             data_column_mapper = {
@@ -75,6 +88,7 @@ class GuideLLMRunner(AsyncBaseRunner):
         sys.stdin.flush()
         sys.stdout.flush()
         self.args.data = [data]
+        self.args.max_requests = len(data)
         self.start_time = time.time() 
         self.end_time = self.start_time
         report, _ = await benchmark_generative_text(self.args)

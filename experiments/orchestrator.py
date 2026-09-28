@@ -52,8 +52,9 @@ def launch_baseline(b_cfg: dict) -> tuple[list[subprocess.Popen], list[str]]:
     args       = b_cfg.get("args", {})
 
     repo_root = os.path.dirname(os.getcwd())
-    script_dir = repo_root
+    script_dir = os.path.join(repo_root, "experiments")
     vllm_bin = os.path.join(repo_root, "vllm/.venv/bin/vllm")
+    mod_serve_bin = os.path.join(repo_root, "vllm/.venv/bin/python")
     rps_bin = os.path.join(repo_root, "rps-serve/.venv/bin/vllm")
 
     env = os.environ.copy()
@@ -70,7 +71,7 @@ def launch_baseline(b_cfg: dict) -> tuple[list[subprocess.Popen], list[str]]:
         venv_bin = str(Path(vllm_bin).parent)
         env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
         cmd = [
-            vllm_bin, _script(script_dir, "mod-serve.py"),
+            mod_serve_bin, _script(script_dir, "mod-serve.py"),
             "--model",                model,
             "--encode-gpus",          str(args["encode_gpus"]),
             "--prefill-decode-gpus",  str(args["prefill_decode_gpus"]),
@@ -95,7 +96,7 @@ def launch_baseline(b_cfg: dict) -> tuple[list[subprocess.Popen], list[str]]:
         venv_bin = str(Path(vllm_bin).parent)
         env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
         cmd = [
-            vllm_bin, _script(script_dir, "mod-serve-rps.py"),
+            mod_serve_bin, _script(script_dir, "mod-serve-rps.py"),
             "--model",                model,
             "--encode-gpus",          str(args["encode_gpus"]),
             "--prefill-decode-gpus",  str(args["prefill_decode_gpus"]),
@@ -251,9 +252,18 @@ def main(config: dict | str) -> None:
         try:
             cmd = [benchmark_python, "-u", benchmark_script, "--config", tmp_path]
             logger.info(f"Running benchmark: {' '.join(cmd)}")
-            result = subprocess.run(cmd, text=True)
-            if result.returncode != 0:
-                raise RuntimeError(f"Benchmark exited with code {result.returncode}")
+            proc = subprocess.Popen(cmd, text=True, start_new_session=True)
+            try:
+                returncode = proc.wait()
+            except KeyboardInterrupt:
+                os.killpg(proc.pid, signal.SIGTERM)
+                try:
+                    proc.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                raise
+            if returncode != 0:
+                raise RuntimeError(f"Benchmark exited with code {returncode}")
         finally:
             os.unlink(tmp_path)
     finally:

@@ -51,7 +51,7 @@ run_sweeps() {
 
 # Always run
 run_sweeps llava-ov       15.0
-run_sweeps llava-ov-large 2.5 --model llava-ov-large     --model-path ../llava-onevision-qwen2-72b-ov-chat-hf
+run_sweeps llava-ov-large 2.5 --model llava-ov-large --model-path ../models/llava-onevision-qwen2-72b-ov-chat-hf
 
 # Only with --full
 if (( FULL )); then

@@ -74,7 +74,7 @@ def make_cleanup(logger: logging.Logger, proxy_name: str, pids: list[subprocess.
         )
 
         subprocess.run(
-            ["pkill", "-9", "-f", "/home/konstantinos.papaioannou/rps-serve/scripts/benchmark.py"],
+            ["pkill", "-9", "-f", "experiments/benchmark.py"],
             capture_output=True
         )
 

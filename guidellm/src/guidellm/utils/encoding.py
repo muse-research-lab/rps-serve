@@ -268,7 +268,7 @@ class Encoder:
             encoding: EncodingTypesAlias,
         ) -> tuple[Any, Any]:
             if encoding == "msgpack" and HAS_MSGPACK:
-                return Packer(), Unpacker(raw=False)
+                return Packer(), Unpacker(raw=False, max_buffer_size=0)
             if encoding == "msgspec" and HAS_MSGSPEC:
                 return MsgspecEncoder(), MsgspecDecoder()
             return None, None

@@ -239,6 +239,9 @@ def main(config: dict | str) -> None:
           - dict: already-parsed config
           - str:  path to a YAML file, or a raw YAML string
     """
+    import multiprocessing as mp
+    mp.set_start_method("spawn", force=True)
+    
     if isinstance(config, dict):
         config_data = config
     elif isinstance(config, str):
