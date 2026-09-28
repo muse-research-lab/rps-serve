@@ -38,7 +38,7 @@ install_rps_serve() {
   export VLLM_PRECOMPILED_WHEEL_VARIANT="cu130"
 
   uv pip install --editable "${dir}" --torch-backend=cu130
-  uv pip install joblib
+  uv pip install joblib scikit-learn
 }
 
 install_vllm_baseline() {
@@ -47,10 +47,11 @@ install_vllm_baseline() {
 
   export VLLM_USE_PRECOMPILED=1
   export VLLM_PRECOMPILED_WHEEL_COMMIT="33ef1941e217a2126d745caec6c6130d6aec3b31"
-  export SETUPTOOLS_SCM_PRETEND_VERSION="0.21.1rc1.dev120+g70c5a0596"
+  export SETUPTOOLS_SCM_PRETEND_VERSION="0.19.2rc1.dev120+g33ef1941e"
   export VLLM_PRECOMPILED_WHEEL_VARIANT="cu130"
 
   uv pip install --editable "${dir}" --torch-backend=cu130
+  uv pip install "transformers<5.17" pandas datasets quart msgpack
 }
 
 install_requirements() {
