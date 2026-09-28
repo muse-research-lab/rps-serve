@@ -4,8 +4,12 @@ workload_alias: "mixed-iii"
 baseline_config:
   name: "rps-serve"
   model: "../models/llava-onevision-qwen2-7b-ov-chat-hf"
-  health_timeout: 300
+  health_timeout: 600
   health_interval: 2
+  args:
+    tensor_parallel_size: 1
+    classifier: "smart"
+    scheduling_policy: "priority"
 
 runner_config:
   target_address: "http://localhost:10001/"

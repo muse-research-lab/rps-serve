@@ -4,7 +4,7 @@ workload_alias: "mixed-iii"
 baseline_config:
   name: "mod-serve-rps"
   model: "../models/llava-onevision-qwen2-7b-ov-chat-hf" # To be overriden by the sweep.py script
-  health_timeout: 300
+  health_timeout: 600
   health_interval: 2
   args:
     encode_gpus: "0,1"
@@ -12,6 +12,7 @@ baseline_config:
     encode_ports: "20003"
     prefill_decode_ports: "20005"
     tensor_parallel_size: 2
+    scheduling_policy: "priority"
 
 runner_config:
   target_address: "http://localhost:10001/"
