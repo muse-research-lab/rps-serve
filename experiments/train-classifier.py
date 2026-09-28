@@ -91,9 +91,20 @@ def generate_classifier(eos, model_name, save = False):
     ])
 
     pipeline.fit(X)
-    
+    clusters = pipeline["model"].labels_
+    X_proc = pipeline[:-1].transform(X)
+    modalities = data["modality_type"].values
+
+    details = {
+        "features": features,
+        "processed_features": X_proc,
+        "clusters": clusters,
+        "modalities": modalities,
+    }
+
     if save:
         joblib.dump(pipeline, os.path.join(CLASSIFIER_DIR, f"{model_name}.pkl"))
+        joblib.dump(details, os.path.join(CLASSIFIER_DIR, f"{model_name}-details.pkl"))
 
 if __name__ == '__main__':
     res = parse_benchmark_file(ISO_OUTPUT_LOG_PATH)

@@ -14,6 +14,7 @@ from llmperf.postprocessing.output import ExperimentOutput
 
 ISO_OUTPUT_LOG_PATH = os.path.join(os.path.dirname(os.getcwd()), "artifacts/benchmark-log-iso.jsonl")
 ISO_OUTPUT_PATH = os.path.join(os.path.dirname(os.getcwd()), "artifacts/outputs-iso")
+ESTIMATOR_OUTPUT_PATH = os.path.join(os.path.dirname(os.getcwd()), "artifacts", "impact-estimator-results.json")
 
 def parse_benchmark_file(filepath: str) -> dict:
     """
@@ -146,4 +147,8 @@ if __name__ == '__main__':
 
         print(f"Generated impact estimator for {model}")
 
-    # print(json.dumps(results, indent=4))
+    with open(ESTIMATOR_OUTPUT_PATH, "w") as f:
+        json.dump(results, f, indent=4)
+        f.write("\n")
+
+    print(f"Saved estimator results to {ESTIMATOR_OUTPUT_PATH}")
