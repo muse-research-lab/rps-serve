@@ -55,9 +55,9 @@ run_sweeps llava-ov-large 2.5 --model llava-ov-large --model-path ../models/llav
 
 # Only with --full
 if (( FULL )); then
-    run_sweeps internvl-3.5-large 5.0 --model internvl-3.5-large --model-path ../InternVL3_5-38B-HF
-    run_sweeps gemma-4-large      6.0 --model gemma-4-large      --model-path ../gemma-4-31B-it
-    run_sweeps qwen-3.5-large     6.0 --model qwen-3.5-large     --model-path ../Qwen3.5-27B
+    run_sweeps internvl-3.5-large 5.0 --model internvl-3.5-large --model-path ../models/InternVL3_5-38B-HF
+    run_sweeps gemma-4-large      6.0 --model gemma-4-large      --model-path ../models/gemma-4-31B-it
+    run_sweeps qwen-3.5-large     6.0 --model qwen-3.5-large     --model-path ../models/Qwen3.5-27B
 else
     echo "Skipping internvl-3.5-large, gemma-4-large, qwen-3.5-large (pass --full to include)"
 fi

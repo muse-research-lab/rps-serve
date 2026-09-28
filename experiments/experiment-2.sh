@@ -67,7 +67,7 @@ LLAVA_OV_RATES_2GPU=(1 3 5 6 7 8 9 10 12)
 LLAVA_OV_RATES_4GPU=(1 3 5 6 7 8 9 10 12 15)
 LLAVA_OV_LARGE_RATES=(0.5 0.75 1.0 1.25 1.5 2.0 2.25 2.5)
 
-LLAVA_OV_LARGE_ARGS=(--model llava-ov-large --model-path ../llava-onevision-qwen2-72b-ov-chat-hf)
+LLAVA_OV_LARGE_ARGS=(--model llava-ov-large --model-path ../models/llava-onevision-qwen2-72b-ov-chat-hf)
 
 FAILED=()
 
