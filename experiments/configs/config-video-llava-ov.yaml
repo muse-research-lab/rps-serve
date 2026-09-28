@@ -1,0 +1,16 @@
+runner_type: "vllm-static"
+model_alias: "llava-ov"
+workload_alias: "video"
+prompt_prep_type: "default"
+
+runner_config:
+  output_path: "../artifacts/outputs-iso"
+  output_log_path: "../artifacts/benchmark-log-iso.jsonl"
+  tensor_parallel_size: 1
+
+prompt_config:
+  max_sampled_frames: 32
+  dynamic_frames: true
+  sampling_strategy: "uniform"
+  temperature: 0.0
+  dynamic_max_tokens: true

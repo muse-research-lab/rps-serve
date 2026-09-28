@@ -9,7 +9,7 @@ for w in "${WORKLOADS[@]}"; do
   cfg="config-${w}-${MODEL}.yaml"
   [[ -f "$cfg" ]] || { echo "missing $cfg"; failed+=("$w"); continue; }
   echo "==> $w ($MODEL)"
-  python3 orchestrator.py --config "$cfg" || failed+=("$w")
+  python3 run_iso.py --config "$cfg" || failed+=("$w")
 done
 
 (( ${#failed[@]} )) && { echo "Failed: ${failed[*]}"; exit 1; }
