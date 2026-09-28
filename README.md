@@ -351,7 +351,7 @@ cd experiments
 bash experiment-4-train.sh
 ```
 
-**Expected runtime:** ~5 minutes on CPU
+**Expected runtime:** ~30 seconds on CPU
 
 **Important Note:**
 

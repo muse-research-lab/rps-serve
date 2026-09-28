@@ -36,9 +36,9 @@ if __name__ == '__main__':
         j += 1
         ax = axes[j]
         eos_md = [
-            res[model]["text-static-small"],
-            res[model]["image-static"],
-            res[model]["video-static"],
+            res[model]["text"],
+            res[model]["image"],
+            res[model]["video"],
         ]
         for i, eo_md in enumerate(eos_md):
             eo = ExperimentOutput(id=eo_md["id"], output_path=ISO_OUTPUT_PATH)
@@ -84,9 +84,9 @@ if __name__ == '__main__':
         j += 1
         ax = axes[j]
         eos_md = [
-            res[model]["text-static-small"],
-            res[model]["image-static"],
-            res[model]["video-static"],
+            res[model]["text"],
+            res[model]["image"],
+            res[model]["video"],
         ]
         for i, eo_md in enumerate(eos_md):
             eo = ExperimentOutput(id=eo_md["id"], output_path=ISO_OUTPUT_PATH)
@@ -126,15 +126,15 @@ if __name__ == '__main__':
     experiment_outputs_i = []
     experiment_outputs_v = []
     for model in model_names.keys():
-        eo = ExperimentOutput(id=res[model]["text-static-small"]["id"], output_path=ISO_OUTPUT_PATH)
+        eo = ExperimentOutput(id=res[model]["text"]["id"], output_path=ISO_OUTPUT_PATH)
         eo.load()
         experiment_outputs_t.append(eo)
 
-        eo = ExperimentOutput(id=res[model]["image-static"]["id"], output_path=ISO_OUTPUT_PATH)
+        eo = ExperimentOutput(id=res[model]["image"]["id"], output_path=ISO_OUTPUT_PATH)
         eo.load()
         experiment_outputs_i.append(eo)
 
-        eo = ExperimentOutput(id=res[model]["video-static"]["id"], output_path=ISO_OUTPUT_PATH)
+        eo = ExperimentOutput(id=res[model]["video"]["id"], output_path=ISO_OUTPUT_PATH)
         eo.load()
         experiment_outputs_v.append(eo)
     title_size = 24
