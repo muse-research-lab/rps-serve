@@ -4,7 +4,7 @@ workload_alias: "mixed-iii"
 baseline_config:
   name: "rps-serve"
   model: "../models/llava-onevision-qwen2-7b-ov-chat-hf"
-  health_timeout: 120
+  health_timeout: 300
   health_interval: 2
 
 runner_config:

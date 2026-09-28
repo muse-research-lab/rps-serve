@@ -5,7 +5,7 @@ baseline_config:
   name: "edf"
   model: "../models/llava-onevision-qwen2-7b-ov-chat-hf" # To be overriden by the sweep.py script
   script_dir: "/home/konstantinos.papaioannou/rps-serve/scripts"
-  health_timeout: 120
+  health_timeout: 300
   health_interval: 2
   args:
     tensor_parallel_size: 1
