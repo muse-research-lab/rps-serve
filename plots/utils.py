@@ -6,7 +6,7 @@ import numpy as np
 from collections import defaultdict
 from statistics import mean
 
-from output import ExperimentOutput
+from llmperf.postprocessing.output import ExperimentOutput
 
 system_colors = {
     "vllm": "#888780",
@@ -29,6 +29,8 @@ system_names = {
     "rps-serve-catfcfs":    "RPS-Serve (Static Only)",
     "rps-serve-wo":    "RPS-Serve (Waiting Only)",
 }
+
+system_markers = {"vllm": "o", "mod-serve": "s", "rps-serve": "*", "mod-serve-rps": "^"}
 
 model_names = {
     "llava-ov": "LLaVA-7B",

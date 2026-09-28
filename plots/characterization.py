@@ -3,7 +3,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 
-from output import ExperimentOutput
+from llmperf.postprocessing.output import ExperimentOutput
 from utils import parse_benchmark_iso_file, get_cdf, model_names
 
 ISO_OUTPUT_LOG_PATH = os.path.join(os.path.dirname(os.getcwd()), "artifacts/benchmark-log-iso.jsonl")
