@@ -124,7 +124,7 @@ class SmartRequestClassifier(BaseRequestClassifier):
 
         if model_name in self.cache:
             entry = self.cache[model_name]
-            classifiers_path = os.path.join(os.path.dirname(os.getcwd()), "../artifacts/classifiers")
+            classifiers_path = os.path.join(os.path.dirname(os.getcwd()), "artifacts", "classifiers")
             path = os.path.join(classifiers_path, f"{model_name}.pkl")
             self.model = joblib.load(path)
             self.image_token_index: int = int(entry["image_token_index"])  # type: ignore[arg-type]

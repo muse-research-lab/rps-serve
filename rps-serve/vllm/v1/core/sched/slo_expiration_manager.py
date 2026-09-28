@@ -125,7 +125,7 @@ class SLOExpirationManager:
         # Compute urgency scores
         for request in requests.values():
             if request.request_md.category == "sand":
-                score = self.ws * self.compute_score(
+                score = self.compute_score(
                     request,
                     avg_sand_queue_age,
                     sand_queue_age,
@@ -133,7 +133,7 @@ class SLOExpirationManager:
                     avg_sand_queue_size,
                 )
             elif request.request_md.category == "pebbles":
-                score = self.wp * self.compute_score(
+                score = self.compute_score(
                     request,
                     avg_pebbles_queue_age,
                     pebbles_queue_age,
@@ -141,7 +141,7 @@ class SLOExpirationManager:
                     avg_pebbles_queue_size,
                 )
             elif request.request_md.category == "rocks":
-                score = self.wr * self.compute_score(
+                score = self.compute_score(
                     request,
                     avg_rocks_queue_age,
                     rocks_queue_age,
