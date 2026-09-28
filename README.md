@@ -375,11 +375,11 @@ To generate the paper's figures, run:
 
 ```sh
 cd plots
+python3 e2e.py # Experiment 1
+python3 scale.py # Experiment 2
+python3 ablation.py # Experiment 3
 python3 characterization.py # Experiment 4
 python3 evaluation.py # Experiment 4
-python3 ablation.py # Experiment 3
-python3 scale.py # Experiment 2
-python3 e2e.py # Experiment 1
 ```
 
 The resulting figures can be found under `artifacts/figures`.
