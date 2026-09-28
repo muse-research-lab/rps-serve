@@ -99,7 +99,10 @@ def launch_vllm_server(
     if role == "ec_consumer":
         cmd += ["--tensor-parallel-size", tp]
         cmd += ["--scheduling-policy", "priority"]
-        cmd += ["--classifier", "smart"]
+        if "llava-onevision-qwen2-72b-ov-chat-hf" in model:
+            cmd += ["--classifier", "naive"] # TODO: Fix classifier
+        else:
+            cmd += ["--classifier", "smart"]
         env = {**os.environ, "CUDA_VISIBLE_DEVICES": gpu_id}
         repo_root = os.path.dirname(os.getcwd())
         rps_bin = os.path.join(repo_root, "rps-serve/.venv/bin/vllm")
