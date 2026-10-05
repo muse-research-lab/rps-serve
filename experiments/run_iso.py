@@ -1,3 +1,4 @@
+import os
 import importlib
 
 import yaml
@@ -6,8 +7,51 @@ import asyncio
 import argparse
 from llmperf.promptpreparation.config import PromptPreparationConfig
 from llmperf.runner.config import RunnerConfig
-from llmperf.config.models import get_model_by_alias
-from llmperf.config.workloads import get_workload_by_alias
+from llmperf.config.models import Model
+from llmperf.preprocessing.workload import Workload
+
+models = {
+    "llava-ov": Model(
+        name="LLaVA-OneVision-7b",
+        path="llava-onevision-qwen2-7b-ov-chat-hf",
+        max_model_len=32768,
+        alias="llava-ov",
+        image_token_index=151646,
+        video_token_index=151647
+    ),
+    "llava-ov-large": Model(
+        name="LLaVA-OneVision-72b",
+        path="llava-onevision-qwen2-72b-ov-chat-hf",
+        max_model_len=32768,
+        alias="llava-ov-large",
+        image_token_index=151646,
+        video_token_index=151647
+    ),
+    "gemma-4-large": Model(
+        name="Gemma4-31B",
+        path="gemma-4-31B-it",
+        max_model_len=262144,
+        alias="gemma-4-large",
+        image_token_index=258880,
+        video_token_index=258884
+    ),
+    "internvl-3.5-large": Model(
+        name="InternVL3.5-38B",
+        path="InternVL3_5-38B-HF",
+        max_model_len=40960,
+        alias="internvl-3.5-large",
+        image_token_index=151671,
+        video_token_index=151678
+    ),
+    "qwen-3.5-large": Model(
+        name="Qwen3.5-27B",
+        path="Qwen3.5-27B",
+        max_model_len=262144,
+        alias="qwen-3.5-large",
+        image_token_index=248056,
+        video_token_index=248057
+    ),
+}
 
 def get_prompt_prep_class(prompt_prep_type: str):
     registry = {
@@ -39,9 +83,16 @@ def get_runner_class(runner_type: str):
 async def run_experiments(config_path: str):
     with open(config_path, 'r') as f:
         config_data = yaml.safe_load(f)
+
+    os.environ["GUIDELLM__MAX_CONCURRENCY"] = 1
     
-    model = get_model_by_alias(config_data['model_alias'])
-    workload = get_workload_by_alias(config_data['workload_alias'])
+    model = models[config_data['model_alias']]
+    model.path = config_data.get("baseline_config", {}).get("model", None)
+    workload = Workload(
+        name=config_data["workload_alias"],
+        path=os.path.join(os.path.dirname(os.getcwd()), "workloads/static"),
+        alias=config_data["workload_alias"]
+    )
 
     p_config = PromptPreparationConfig(
         model=model,

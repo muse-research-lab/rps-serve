@@ -1,12 +1,35 @@
-runner_type: "vllm-static"
 model_alias: "llava-ov"
 workload_alias: "video"
 prompt_prep_type: "default"
 
+baseline_config:
+  name: "vllm"
+  model: "../models/llava-onevision-qwen2-7b-ov-chat-hf"
+  health_timeout: 600
+  health_interval: 2
+  args:
+    tensor_parallel_size: 1
+
 runner_config:
+  target_address: "http://localhost:10001/"
+  profile: "constant"
+  rate: 1.0
   output_path: "../artifacts/outputs-iso"
   output_log_path: "../artifacts/benchmark-log-iso.jsonl"
   tensor_parallel_size: 1
+  num_requests: null
+  data_column_mapper: "custom_column_mapper"
+  data_finalizer: "custom_generative"
+  max_seconds: null
+  max_requests: 3500
+  engine: "vllm"
+  approach: "tp1"
+
+monitor_config:
+  addrs:
+    - localhost:10001
+  gpus:
+    - 0
 
 prompt_config:
   max_sampled_frames: 32

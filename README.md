@@ -412,7 +412,7 @@ The resulting figures can be found under `artifacts/figures`.
 author = {Papaioannou, Konstantinos and Doudali, Thaleia Dimitra},
 title = {Rocks, Pebbles and Sand: Modality-aware Scheduling for Multimodal Large Language Model Inference},
 year = {2026},
-isbn = {},
+isbn = {979-8-4007-2818-1},
 publisher = {USENIX Association},
 address = {USA},
 booktitle = {Proceedings of the 2026 USENIX Conference on Usenix Annual Technical Conference},

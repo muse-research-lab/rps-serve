@@ -9,7 +9,7 @@ baseline_config:
   args:
     tensor_parallel_size: 1
     scheduling_policy: "edf"
-    slo_registry_files: "../artifacts/outputs-iso/mixed-iii-ov__vllm__iso__20260601-175551__poldef__maxlendef__batchdef__blocksdef__encbatchdef__encblocksdef__gpu0.95__swap0__stratuniform__maxframe32.jsonl"
+    slo_registry_files: "../artifacts/outputs-iso/mixed-iii__llava-ov__vllm__iso__20260601-175551__poldef__maxlendef__batchdef__blocksdef__encbatchdef__encblocksdef__gpu0.95__swap0__stratuniform__maxframe32.jsonl"
 
 runner_config:
   target_address: "http://localhost:10001/"

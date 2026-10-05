@@ -11,7 +11,7 @@ class Filter:
 
     def include(self, ro: "RequestOutput") -> bool:
         if not self.include_aborted and ro.aborted:
-                return False
+            return False
         if self.category_ids is not None and self.category is not None:
             return (ro.category is None and ro.id in self.category_ids) or ro.category == self.category
         if self.category_ids is not None:
