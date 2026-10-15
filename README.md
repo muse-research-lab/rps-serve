@@ -2,8 +2,7 @@
 
 Artifact for **"Rocks, Pebbles and Sand: Modality-aware Scheduling for Multimodal Large Language Model Inference"**, accepted at ATC '26.
 
-- **Paper DOI:** TODO
-- **Artifact DOI (Zenodo):** TODO 
+- **Paper DOI:** [https://doi.org/10.1145/3828523.3857088](https://doi.org/10.1145/3828523.3857088)
 - **License:** Apache License 2.0
 
 ---
@@ -42,7 +41,7 @@ RPS-Serve is a modality-aware request scheduling framework for multimodal LLM (M
 
 ### 2.1 Hardware
 
-- GPUs: 4 × NVIDIA H100 (96 GB)
+- GPUs: 4 × NVIDIA H100 (94 GB)
 - CPUs: 2 × Intel Xeon Platinum 8592+ (64 cores each)
 - Memory: 1 TB DRAM
 
@@ -409,15 +408,18 @@ The resulting figures can be found under `artifacts/figures`.
 
 ```bibtex
 @inproceedings{rps-serve,
-author = {Papaioannou, Konstantinos and Doudali, Thaleia Dimitra},
-title = {Rocks, Pebbles and Sand: Modality-aware Scheduling for Multimodal Large Language Model Inference},
-year = {2026},
-isbn = {979-8-4007-2818-1},
-publisher = {USENIX Association},
-address = {USA},
-booktitle = {Proceedings of the 2026 USENIX Conference on Usenix Annual Technical Conference},
-location = {Hong Kong},
-series = {USENIX ATC '26}
+  author    = {Papaioannou, Konstantinos and Doudali, Thaleia Dimitra},
+  title     = {Rocks, Pebbles and Sand: Modality-aware Scheduling for Multimodal Large Language Model Inference},
+  booktitle = {The 2026 ACM SIGOPS Annual Technical Conference (SIGOPS ATC 2026)},
+  year      = {2026},
+  month     = nov,
+  location  = {Hong Kong, China},
+  publisher = {Association for Computing Machinery},
+  address   = {New York, NY, USA},
+  series    = {SIGOPS ATC '26},
+  isbn      = {979-8-4007-2818-1},
+  doi       = {10.1145/3828523.3857088},
+  url       = {https://doi.org/10.1145/3828523.3857088}
 }
 ```
 
