@@ -32,7 +32,7 @@ class DummyRequestClassifier(BaseRequestClassifier):
         return "rocks"
 
 
-class NaiveRequestClassifier(BaseRequestClassifier):
+class NaiveRequestClassifier(BaseRequestClassifier):   
     def classify(self, request: EngineCoreRequest) -> str:
         # Video inputs & multi image inputs
         if (
@@ -65,60 +65,58 @@ class SmartRequestClassifier(BaseRequestClassifier):
         "llava-onevision-qwen2-0.5b-ov-hf": {
             "image_token_index": 151646,
             "video_token_index": 151647,
-            "classes": [1, 0, 2],  # [sand, pebbles, rocks]
         },
         "Qwen2.5-VL-3B-Instruct": {
             "image_token_index": 151655,
             "video_token_index": 151656,
-            "classes": [2, 0, 1],
         },
         "gemma-3-4b-it": {
             "image_token_index": 262144,
             "video_token_index": -1,
-            "classes": [2, 0, 1],
         },
         "llava-onevision-qwen2-7b-ov-chat-hf": {
             "image_token_index": 151646,
             "video_token_index": 151647,
-            "classes": [1, 0, 2],
         },
         "Qwen2.5-VL-7B-Instruct": {
             "image_token_index": 151655,
             "video_token_index": 151656,
-            "classes": [2, 0, 1],
         },
         "gemma-3-12b-it": {
             "image_token_index": 262144,
             "video_token_index": -1,
-            "classes": [2, 0, 1],
         },
         "pixtral-12b": {
             "image_token_index": 10,
             "video_token_index": -1,
-            "classes": [1, 0, 2],
         },
         "llava-onevision-qwen2-72b-ov-chat-hf": {
             "image_token_index": 151646,
             "video_token_index": 151647,
-            "classes": [1, 0, 2],
         },
         "InternVL3_5-38B-HF": {
             "image_token_index": 151671,
             "video_token_index": 151678,
-            "classes": [1, 0, 2],
         },
         "gemma-4-31B-it": {
             "image_token_index": 258880,
             "video_token_index": 258884,
-            "classes": [2, 0, 1],
         },
         "Qwen3.5-27B": {
             "image_token_index": 248056,
             "video_token_index": 248057,
-            "classes": [2, 0, 1],
         },
     }
 
+    @staticmethod
+    def _cluster_to_category(pipeline) -> dict[int, str]:
+        #Labels clusters 
+        #K-means cluster ids are arbitrary, so this stays correct after retraining.
+        centers = pipeline[-1].cluster_centers_
+        assert len(centers) == 3, "expected k=3 clusters"
+        order = sorted(range(3), key=lambda i: float(centers[i].sum()))
+        return {order[0]: "sand", order[1]: "pebbles", order[2]: "rocks"}
+        
     def __init__(self, model: str) -> None:
         model_name = model.split("/")[-1]
 
@@ -129,13 +127,9 @@ class SmartRequestClassifier(BaseRequestClassifier):
             self.model = joblib.load(path)
             self.image_token_index: int = int(entry["image_token_index"])  # type: ignore[arg-type]
             self.video_token_index: int = int(entry["video_token_index"])  # type: ignore[arg-type]
-            classes = entry["classes"]
-            assert isinstance(classes, list)
-            self.cluster_to_category: dict[int, str] = {
-                classes[0]: "sand",
-                classes[1]: "pebbles",
-                classes[2]: "rocks",
-            }
+            self.cluster_to_category: dict[int, str] = self._cluster_to_category(
+                self.model
+               )
 
     def classify(self, request: EngineCoreRequest) -> str:
         assert request.prompt_token_ids is not None, "prompt_token_ids must not be None"
